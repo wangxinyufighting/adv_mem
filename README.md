@@ -80,11 +80,24 @@ BGE Reranker 可以运行在另一块 GPU 或远程服务上。确保
 
 ## 启动训练
 
-在项目根目录执行：
+先生成配置文件并填入 API Key：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash scripts/run_alternating.sh --rounds 1
+cp .env.example .env
 ```
+
+默认配置使用 GPU 0 训练、GPU 1 运行 Answer Agent、GPU 2 运行
+BGE Reranker。一键启动：
+
+```bash
+bash train.sh --rounds 20
+```
+
+`train.sh` 会启动 Answer Agent 和 BGE Reranker、等待服务就绪、执行交替
+训练，并在结束时关闭由它启动的服务。
+
+使用远程 Answer Agent 或 Reranker 时，在 `.env` 中设置对应 URL，并将
+`START_ANSWER_AGENT` 或 `START_RERANKER` 设为 `0`。
 
 默认使用：
 
@@ -97,7 +110,7 @@ CUDA_VISIBLE_DEVICES=0 bash scripts/run_alternating.sh --rounds 1
 常用参数：
 
 ```bash
-bash scripts/run_alternating.sh \
+bash train.sh \
   --rounds 5 \
   --routes-per-case 16 \
   --candidates-per-round 8 \
