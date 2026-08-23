@@ -177,7 +177,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         )
         routes = audit_route_builder.routes(route_count)
         with VLLMPolicyServer(
-            ROOT / "verl",
+            runner.verl_dir,
             state.attacker_model,
             config.policy_port,
             round_dir / "attacker_server.log",
@@ -236,7 +236,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 DeepSeekMemoryJudge.from_env(),
             )
             with VLLMPolicyServer(
-                ROOT / "verl",
+                runner.verl_dir,
                 state.builder_model,
                 config.policy_port,
                 round_dir / "memory_builder_server.log",
@@ -290,7 +290,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 stop_config,
             )
             with VLLMPolicyServer(
-                ROOT / "verl",
+                runner.verl_dir,
                 state.builder_model,
                 config.policy_port,
                 round_dir / "compaction_server.log",

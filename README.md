@@ -27,19 +27,29 @@ Attacker 和 Memory Builder 按轮次交替训练，不同时更新。Retrieval 
 
 ## 环境
 
-训练需要 Linux x86_64、CUDA GPU 和 `uv`。先安装 Verl 环境：
+训练需要 Linux x86_64、CUDA GPU、525 或更新的 NVIDIA Driver，以及
+Python 3.10-3.12。训练环境固定为：
+
+- CUDA 12.4
+- PyTorch 2.6.0+cu124
+- vLLM 0.8.5.post1
+- FlashAttention 2.7.4.post1
+- Verl 0.4.1.dev
+
+首次执行 `train.sh` 会自动创建 `.venv-cu124`，不使用 `uv`。也可先手动安装：
 
 ```bash
-cd verl
-uv sync --extra vllm --extra fsdp
-cd ..
+bash scripts/setup_cuda124.sh
 ```
 
-调度程序需要：
+检查环境：
 
 ```bash
-python3 -m pip install openai requests pyarrow
+.venv-cu124/bin/python -c \
+  'import torch, vllm; print(torch.__version__, torch.version.cuda, vllm.__version__)'
 ```
+
+应输出 `2.6.0+cu124 12.4 0.8.5.post1`。旧的 `verl/.venv` 不再使用。
 
 ## 服务配置
 
@@ -188,4 +198,5 @@ data/training/
 - `attacker/verl_reward.py`：Attacker Reward 入口。
 - `defender/verl_reward.py`：Memory Builder Reward 入口。
 - `memory/store.py`：执行记忆编辑和题库更新。
+
 # adv_mem

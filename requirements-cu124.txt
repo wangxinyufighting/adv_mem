@@ -1,0 +1,30 @@
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+torchaudio==2.6.0+cu124
+vllm==0.8.5.post1
+flashinfer-python @ https://github.com/flashinfer-ai/flashinfer/releases/download/v0.2.2.post1/flashinfer_python-0.2.2.post1%2Bcu124torch2.6-cp38-abi3-linux_x86_64.whl
+
+tensordict==0.6.2
+transformers[hf_xet]==4.51.3
+numpy==1.26.4
+pyarrow==19.0.1
+accelerate==1.6.0
+codetiming
+datasets==3.6.0
+dill
+hydra-core
+liger-kernel==0.5.10
+mathruler
+openai
+packaging
+pandas==2.2.3
+peft==0.15.2
+pybind11
+pylatexenc
+qwen-vl-utils
+ray[default]==2.46.0
+requests
+torchdata==0.11.0
+wandb==0.19.11

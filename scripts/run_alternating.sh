@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+PYTHON_BIN=${PYTHON_BIN:-${ROOT}/.venv-cu124/bin/python}
 export PYTHONPATH="${ROOT}:${PYTHONPATH:-}"
 
 cd "${ROOT}"
-python3 -m training.run_alternating "$@"
+"${PYTHON_BIN}" -m training.run_alternating "$@"

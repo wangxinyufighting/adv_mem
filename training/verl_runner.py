@@ -18,7 +18,12 @@ class VerlRunner:
 
     def __init__(self, root: str | Path, config: VerlConfig | None = None):
         self.root = Path(root)
-        self.verl_dir = self.root / "verl"
+        self.verl_dir = Path(
+            os.environ.get("VERL_HOME", self.root / ".verl-cu124-src")
+        )
+        self.python = os.environ.get(
+            "PYTHON_BIN", str(self.root / ".venv-cu124/bin/python")
+        )
         self.config = config or VerlConfig()
 
     def train(
@@ -49,15 +54,7 @@ class VerlRunner:
         actor = self._latest_checkpoint(checkpoints) / "actor"
         subprocess.run(
             [
-                "uv",
-                "run",
-                "--frozen",
-                "--all-packages",
-                "--extra",
-                "vllm",
-                "--extra",
-                "fsdp",
-                "python3",
+                self.python,
                 "-m",
                 "verl.model_merger",
                 "merge",

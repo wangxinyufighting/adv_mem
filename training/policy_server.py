@@ -48,15 +48,7 @@ class VLLMPolicyServer(AbstractContextManager[ChatPolicy]):
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_file = self.log_path.open("w", encoding="utf-8")
         command = [
-            "uv",
-            "run",
-            "--frozen",
-            "--all-packages",
-            "--extra",
-            "vllm",
-            "--extra",
-            "fsdp",
-            "python3",
+            os.environ.get("PYTHON_BIN", "python3"),
             "-m",
             "vllm.entrypoints.openai.api_server",
             "--model",

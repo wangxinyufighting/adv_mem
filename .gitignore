@@ -2,8 +2,9 @@ MemOS/
 .memos/
 tests/
 verl/
+.verl-cu124-src/
+.venv-cu124/
 data/
 main.py
 **/__pycache__/
 *.pyc
-

@@ -12,12 +12,13 @@ PPO_MICRO_BATCH_SIZE=${PPO_MICRO_BATCH_SIZE:-1}
 ROLLOUT_N=${ROLLOUT_N:-4}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-1}
 CHECKPOINT_DIR=${CHECKPOINT_DIR:-${ROOT}/checkpoints/attacker}
+VERL_HOME=${VERL_HOME:-${ROOT}/.verl-cu124-src}
+PYTHON_BIN=${PYTHON_BIN:-${ROOT}/.venv-cu124/bin/python}
 
-export PYTHONPATH="${ROOT}:${ROOT}/verl:${PYTHONPATH:-}"
-cd "${ROOT}/verl"
+export PYTHONPATH="${VERL_HOME}:${ROOT}:${PYTHONPATH:-}"
+cd "${VERL_HOME}"
 
-uv run --frozen --all-packages --extra vllm --extra fsdp python3 \
-    -m verl.trainer.main_ppo \
+"${PYTHON_BIN}" -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     algorithm.use_kl_in_reward=False \
     data.train_files="${TRAIN_FILE}" \
@@ -43,8 +44,8 @@ uv run --frozen --all-packages --extra vllm --extra fsdp python3 \
     actor_rollout_ref.rollout.n="${ROLLOUT_N}" \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE}" \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
-    reward.custom_reward_function.path="${ROOT}/attacker/verl_reward.py" \
-    reward.custom_reward_function.name=compute_score \
+    custom_reward_function.path="${ROOT}/attacker/verl_reward.py" \
+    custom_reward_function.name=compute_score \
     trainer.critic_warmup=0 \
     trainer.logger='["console"]' \
     trainer.project_name=adv_mem \
