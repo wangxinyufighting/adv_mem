@@ -184,7 +184,9 @@ data/training/
   round_000/
     attacker_data/
     attacker/checkpoints/
-      rollouts/<step>.jsonl
+      rollouts/
+        <step>.jsonl
+        reward_trace.jsonl
     attacker/model/
     memory_builder_data/
     memory_builder/checkpoints/
@@ -194,9 +196,10 @@ data/training/
     ...
 ```
 
-`services/training.log` 保存终端训练日志，Answer Agent 和 Reranker
-日志也保存在 `services/` 中。`rollouts/<step>.jsonl` 保存每个样本的
-prompt、模型输出、总 reward 和各 reward 分项，用于检查实际生成内容。
+`services/training.log` 保存本次启动的终端日志，再次启动时会覆盖旧日志。
+Answer Agent 和 Reranker 日志也保存在 `services/` 中。
+`rollouts/<step>.jsonl` 保存 prompt、模型输出和 reward 分项；Attacker 的
+`reward_trace.jsonl` 额外保存 Oracle 原因、标准答案和 Memory Answer。
 
 `run_state.json` 保存：
 

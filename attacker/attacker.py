@@ -11,19 +11,20 @@ from utils.json_output import parse_json_object
 from utils.memory_retrieval import HybridMemoryRetriever
 
 
-SYSTEM_PROMPT = """You generate one question that exposes a missing memory capability.
+SYSTEM_PROMPT = """Generate one natural question that exposes a missing memory capability.
 
 The question must be valuable, answerable from the route, not answerable from the
 memory neighborhood, and different from prior questions. Follow the attack mode:
-- single_fact: ask about one evidence fact.
-- same_topic: combine at least two facts under the topic.
-- temporal_evolution: ask about the change from the archived fact to the active fact.
-- comparison: compare the two evidence facts.
+- single_fact: ask for one detail without stating that detail in the question.
+- same_topic: ask a question that needs at least two related memories.
+- temporal_evolution: ask about an explicit change from an earlier event to a
+  later event.
+- comparison: ask for a meaningful comparison between two memories.
 
-Write a natural standalone question. Do not include the answer, evidence, node IDs,
-or explanations. Return JSON only: {"question":"..."}
-
-/no_think"""
+The question must be standalone and end with a question mark. Never mention routes,
+evidence, facts, nodes, memory, context, IDs, or these instructions. Do not state
+the answer inside the question. Return exactly one JSON object:
+{"question":"..."}"""
 
 
 class Attacker:
@@ -62,7 +63,10 @@ class Attacker:
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": json.dumps(observation.to_dict(), ensure_ascii=False),
+                "content": (
+                    json.dumps(observation.to_dict(), ensure_ascii=False)
+                    + "\n\n/no_think"
+                ),
             },
         ]
 

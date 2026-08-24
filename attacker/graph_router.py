@@ -2,6 +2,7 @@ import hashlib
 import json
 import random
 from dataclasses import dataclass
+from datetime import datetime
 from itertools import combinations
 
 from attacker.models import (
@@ -18,6 +19,12 @@ from attacker.models import (
 
 class NoRouteFoundError(ValueError):
     pass
+
+
+def _source_payload(raw_source):
+    while isinstance(raw_source, str):
+        raw_source = json.loads(raw_source)
+    return raw_source
 
 
 @dataclass(frozen=True)
@@ -176,6 +183,7 @@ class GraphRouterPolicy:
                 and source.get("status") == "archived"
                 and target.get("type") == "fact"
                 and target.get("status") == "activated"
+                and self._has_later_source(source, target)
             ):
                 pairs.append((source_id, target_id))
 
@@ -190,6 +198,21 @@ class GraphRouterPolicy:
             connector_node_ids=(),
             steps=(index.step(source_id, target_id, "MERGED_TO"),),
         )
+
+    @staticmethod
+    def _has_later_source(source: dict, target: dict) -> bool:
+        source_time = GraphRouterPolicy._latest_source_time(source)
+        target_time = GraphRouterPolicy._latest_source_time(target)
+        return bool(source_time and target_time and target_time > source_time)
+
+    @staticmethod
+    def _latest_source_time(node: dict) -> datetime | None:
+        times = [
+            datetime.fromisoformat(source["chat_time"].replace("Z", "+00:00"))
+            for raw_source in node.get("sources") or []
+            if (source := _source_payload(raw_source)).get("chat_time")
+        ]
+        return max(times, default=None)
 
     def _route_comparison(self, index: _GraphIndex) -> _RawRoute:
         candidates: list[tuple[str, str, str]] = []
@@ -345,10 +368,8 @@ class GraphRouterPolicy:
     def _parse_sources(node: dict) -> tuple[SourceRecord, ...]:
         records = []
         for index, raw_source in enumerate(node.get("sources") or []):
-            source = raw_source
             # MemOS exports may JSON-encode the same source more than once.
-            while isinstance(source, str):
-                source = json.loads(source)
+            source = _source_payload(raw_source)
             records.append(
                 SourceRecord(
                     source_id=f"{node['id']}:{index}",

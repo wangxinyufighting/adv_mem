@@ -48,7 +48,7 @@ fi
 
 "${PYTHON_BIN}" -c \
     'import flash_attn, torch, vllm; assert torch.version.cuda == "12.4", f"Expected CUDA 12.4, got {torch.version.cuda}"; assert vllm.__version__ == "0.8.5.post1", vllm.__version__'
-
+training/verl_runner.py
 : "${DEEPSEEK_API_KEY:?Set DEEPSEEK_API_KEY in .env}"
 : "${MOS_EMBEDDER_API_KEY:?Set MOS_EMBEDDER_API_KEY in .env}"
 : "${MOS_EMBEDDER_API_BASE:?Set MOS_EMBEDDER_API_BASE in .env}"
@@ -179,4 +179,4 @@ wait_for_service \
 
 CUDA_VISIBLE_DEVICES=${TRAIN_GPUS} \
     bash "${ROOT}/scripts/run_alternating.sh" "$@" \
-    2>&1 | tee -a "${LOG_DIR}/training.log"
+    2>&1 | tee "${LOG_DIR}/training.log"

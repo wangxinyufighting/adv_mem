@@ -1,5 +1,9 @@
+import json
 import math
+import os
 from dataclasses import dataclass
+from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from attacker.answer_agent import QwenAnswerAgent
@@ -11,7 +15,7 @@ from attacker.models import (
 )
 from attacker.oracle import DeepSeekOracle
 from attacker.reward_judge import DeepSeekRewardJudge
-from utils.json_output import is_exact_json_object, parse_json_object
+from utils.json_output import is_clean_json_object, parse_json_object
 from utils.memory_retrieval import HybridMemoryRetriever
 
 
@@ -34,6 +38,7 @@ class AttackerReward:
         judge: Any,
         embedder: Any,
         config: AttackerRewardConfig | None = None,
+        trace_path: str | Path | None = None,
     ):
         self.oracle = oracle
         self.answer_agent = answer_agent
@@ -41,6 +46,10 @@ class AttackerReward:
         self.judge = judge
         self.embedder = embedder
         self.config = config or AttackerRewardConfig()
+        self.trace_path = Path(trace_path) if trace_path else None
+        self._trace_lock = Lock()
+        if self.trace_path:
+            self.trace_path.parent.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def from_env(cls) -> "AttackerReward":
@@ -51,6 +60,7 @@ class AttackerReward:
             retriever=retriever,
             judge=DeepSeekRewardJudge.from_env(),
             embedder=retriever.embedder,
+            trace_path=os.getenv("ATTACKER_REWARD_TRACE"),
         )
 
     def evaluate(
@@ -58,19 +68,44 @@ class AttackerReward:
         response: str,
         context: AttackerRewardContext,
     ) -> dict[str, float]:
+        trace = {
+            "route_id": context.route.route_id,
+            "attack_mode": context.route.attack_mode.value,
+            "response": response,
+        }
         try:
             question = parse_json_object(response, ("question",))["question"].strip()
         except (ValueError, KeyError, TypeError, AttributeError):
-            return self._invalid(format_valid=0.0)
+            return self._finish(
+                self._invalid(format_valid=0.0),
+                trace,
+                stage="format_invalid",
+            )
 
         if not question:
-            return self._invalid(format_valid=0.0)
+            return self._finish(
+                self._invalid(format_valid=0.0),
+                trace,
+                stage="format_invalid",
+            )
 
-        format_valid = 1.0 if is_exact_json_object(response) else 0.5
+        trace["question"] = question
+        format_valid = 1.0 if is_clean_json_object(response) else 0.5
+        if not question.endswith(("?", "\uff1f")):
+            return self._finish(
+                self._invalid(format_valid=format_valid),
+                trace,
+                stage="question_invalid",
+            )
 
         oracle = self.oracle.evaluate(question, context.route)
         if not oracle.valid:
-            return self._invalid(format_valid=format_valid)
+            return self._finish(
+                self._invalid(format_valid=format_valid),
+                trace,
+                stage="oracle_invalid",
+                oracle_invalid_reason=oracle.invalid_reason,
+            )
 
         # Golden corpus is copied verbatim from the Full Memory Graph.
         golden_answer = self.answer_agent.answer_sources(
@@ -88,13 +123,24 @@ class AttackerReward:
             tuple(result.node for result in memory_results),
         )
         judged = self.judge.evaluate(oracle, golden_answer, memory_answer)
+        trace.update(
+            {
+                "oracle_answer": oracle.answer,
+                "supporting_source_ids": [
+                    item.source_id for item in oracle.supporting_evidence
+                ],
+                "golden_answer": golden_answer,
+                "memory_answer": memory_answer,
+            }
+        )
 
         if judged.gold_correctness < self.config.gold_threshold:
-            return {
+            result = {
                 **self._invalid(format_valid=format_valid, oracle_valid=1.0),
                 "score": judged.gold_correctness / self.config.gold_threshold - 1.0,
                 "gold_correctness": judged.gold_correctness,
             }
+            return self._finish(result, trace, stage="gold_invalid")
 
         uncovered = max(
             0.0,
@@ -104,7 +150,7 @@ class AttackerReward:
         fidelity = self._route_fidelity(context.route, oracle)
         score = (judged.value * uncovered * novelty * fidelity) ** 0.25
         score *= format_valid
-        return {
+        result = {
             "score": score,
             "format_valid": format_valid,
             "oracle_valid": 1.0,
@@ -115,6 +161,20 @@ class AttackerReward:
             "novelty": novelty,
             "route_fidelity": fidelity,
         }
+        return self._finish(result, trace, stage="scored")
+
+    def _finish(
+        self,
+        result: dict[str, float],
+        trace: dict[str, Any],
+        **details: Any,
+    ) -> dict[str, float]:
+        if self.trace_path:
+            record = {**trace, **details, "reward": result}
+            line = json.dumps(record, ensure_ascii=False)
+            with self._trace_lock, self.trace_path.open("a") as stream:
+                stream.write(line + "\n")
+        return result
 
     def _novelty(
         self,

@@ -50,6 +50,10 @@ class VerlRunner:
             "TOTAL_EPOCHS": str(self.config.epochs),
             "CHECKPOINT_DIR": str(checkpoints),
         }
+        if role == "attacker":
+            env["ATTACKER_REWARD_TRACE"] = str(
+                checkpoints / "rollouts" / "reward_trace.jsonl"
+            )
         script = self.root / "scripts" / f"train_{role}_grpo.sh"
         subprocess.run([str(script)], cwd=self.root, env=env, check=True)
 

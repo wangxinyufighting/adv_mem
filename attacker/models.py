@@ -189,11 +189,10 @@ class GraphRouteBundle:
         }
 
     def to_oracle_context(self) -> dict[str, Any]:
-        """Expose raw evidence so the Oracle can validate independently."""
+        """Expose only raw evidence used by the frozen Answer Agent."""
         return {
             "route_id": self.route_id,
             "attack_mode": self.attack_mode.value,
-            "evidence_nodes": [asdict(node) for node in self.evidence_nodes],
             "source_records": [asdict(source) for source in self.source_records],
         }
 
