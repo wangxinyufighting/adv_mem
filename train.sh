@@ -102,7 +102,17 @@ fi
 
 export ANSWER_AGENT_PORT BGE_RERANKER_PORT
 
-LOG_DIR=${TRAIN_LOG_DIR:-${ROOT}/data/training/services}
+WORK_DIR=${ROOT}/data/training
+ARGS=("$@")
+for ((index = 0; index < ${#ARGS[@]}; index++)); do
+    case ${ARGS[index]} in
+        --work-dir) WORK_DIR=${ARGS[index + 1]} ;;
+        --work-dir=*) WORK_DIR=${ARGS[index]#*=} ;;
+    esac
+done
+[[ ${WORK_DIR} == /* ]] || WORK_DIR=${ROOT}/${WORK_DIR}
+
+LOG_DIR=${TRAIN_LOG_DIR:-${WORK_DIR}/services}
 mkdir -p "${LOG_DIR}"
 PIDS=()
 

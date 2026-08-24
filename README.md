@@ -194,7 +194,8 @@ data/training/
     ...
 ```
 
-`training.log` 保存终端训练日志。`rollouts/<step>.jsonl` 保存每个样本的
+`services/training.log` 保存终端训练日志，Answer Agent 和 Reranker
+日志也保存在 `services/` 中。`rollouts/<step>.jsonl` 保存每个样本的
 prompt、模型输出、总 reward 和各 reward 分项，用于检查实际生成内容。
 
 `run_state.json` 保存：
