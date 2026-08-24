@@ -25,7 +25,7 @@ For a valid question, return:
   "valid": true,
   "answer": "a concise canonical answer",
   "supporting_evidence": [
-    {"source_id": "an existing source ID", "quote": "an exact source excerpt"}
+    {"source_id": "an existing source ID"}
   ],
   "invalid_reason": null,
   "confidence": 0.0
@@ -112,22 +112,30 @@ class DeepSeekOracle:
         evidence = []
 
         for item in payload["supporting_evidence"]:
-            source = source_by_id[item["source_id"]]
-            quote = item["quote"].strip()
-            if quote not in source.content:
-                raise ValueError(f"Oracle quote is not present in source {source.source_id}")
+            source = source_by_id.get(item["source_id"])
+            if source is None:
+                continue
             evidence.append(
                 SupportingEvidence(
                     source_id=source.source_id,
                     node_id=source.node_id,
-                    quote=quote,
+                    # Evidence text always comes verbatim from the Full Memory Graph.
+                    quote=source.content,
                     chat_time=source.chat_time,
                     role=source.role,
                 )
             )
 
         if not answer or not evidence:
-            raise ValueError("A valid Oracle result requires an answer and evidence")
+            return OracleResult(
+                route_id=route.route_id,
+                question=question,
+                valid=False,
+                answer=None,
+                supporting_evidence=(),
+                invalid_reason="Oracle did not select valid route evidence.",
+                confidence=confidence,
+            )
 
         return OracleResult(
             route_id=route.route_id,
