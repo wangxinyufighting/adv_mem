@@ -33,15 +33,17 @@ class VerlRunner:
         dataset: DatasetFiles,
         output_dir: str | Path,
     ) -> str:
-        output = Path(output_dir)
+        # Verl runs from its own source directory, so paths crossing that process
+        # boundary must be absolute.
+        output = Path(output_dir).resolve()
         checkpoints = output / "checkpoints"
         merged = output / "model"
         batch_size = min(self.config.batch_size, dataset.train_size)
         env = {
             **os.environ,
             "MODEL_PATH": model_path,
-            "TRAIN_FILE": str(dataset.train),
-            "VAL_FILE": str(dataset.val),
+            "TRAIN_FILE": str(dataset.train.resolve()),
+            "VAL_FILE": str(dataset.val.resolve()),
             "NGPUS": str(self.config.n_gpus),
             "TRAIN_BATCH_SIZE": str(batch_size),
             "PPO_MINI_BATCH_SIZE": str(batch_size),
