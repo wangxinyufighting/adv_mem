@@ -10,6 +10,7 @@ from memory.models import (
     MemoryState,
 )
 from memory.store import MemoryStore
+from utils.json_output import parse_json_object
 
 
 SYSTEM_PROMPT = """You are a long-term memory editor.
@@ -74,7 +75,10 @@ class MemoryBuilder:
         ]
 
     def parse_action(self, response: str) -> MemoryEditAction:
-        payload = json.loads(response)
+        payload = parse_json_object(
+            response,
+            ("operation", "target_node_ids", "new_memory"),
+        )
         new_memory = payload["new_memory"]
         draft = (
             MemoryDraft(

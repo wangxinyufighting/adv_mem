@@ -1,5 +1,4 @@
-import json
-import math
+attacker/attacker.pyimport math
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +11,7 @@ from attacker.models import (
 )
 from attacker.oracle import DeepSeekOracle
 from attacker.reward_judge import DeepSeekRewardJudge
+from utils.json_output import is_exact_json_object, parse_json_object
 from utils.memory_retrieval import HybridMemoryRetriever
 
 
@@ -59,16 +59,18 @@ class AttackerReward:
         context: AttackerRewardContext,
     ) -> dict[str, float]:
         try:
-            question = json.loads(response)["question"].strip()
-        except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+            question = parse_json_object(response, ("question",))["question"].strip()
+        except (ValueError, KeyError, TypeError, AttributeError):
             return self._invalid(format_valid=0.0)
 
         if not question:
             return self._invalid(format_valid=0.0)
 
+        format_valid = 1.0 if is_exact_json_object(response) else 0.5
+
         oracle = self.oracle.evaluate(question, context.route)
         if not oracle.valid:
-            return self._invalid(format_valid=1.0)
+            return self._invalid(format_valid=format_valid)
 
         # Golden corpus is copied verbatim from the Full Memory Graph.
         golden_answer = self.answer_agent.answer_sources(
@@ -89,7 +91,7 @@ class AttackerReward:
 
         if judged.gold_correctness < self.config.gold_threshold:
             return {
-                **self._invalid(format_valid=1.0, oracle_valid=1.0),
+                **self._invalid(format_valid=format_valid, oracle_valid=1.0),
                 "score": judged.gold_correctness / self.config.gold_threshold - 1.0,
                 "gold_correctness": judged.gold_correctness,
             }
@@ -101,9 +103,10 @@ class AttackerReward:
         novelty = self._novelty(question, oracle, context)
         fidelity = self._route_fidelity(context.route, oracle)
         score = (judged.value * uncovered * novelty * fidelity) ** 0.25
+        score *= format_valid
         return {
             "score": score,
-            "format_valid": 1.0,
+            "format_valid": format_valid,
             "oracle_valid": 1.0,
             "gold_correctness": judged.gold_correctness,
             "memory_correctness": judged.memory_correctness,

@@ -7,6 +7,7 @@ from attacker.models import (
     GraphRouteBundle,
 )
 from memory.models import MemoryState
+from utils.json_output import parse_json_object
 from utils.memory_retrieval import HybridMemoryRetriever
 
 
@@ -67,7 +68,7 @@ class Attacker:
 
     @staticmethod
     def parse_question(response: str) -> str:
-        return json.loads(response)["question"].strip()
+        return parse_json_object(response, ("question",))["question"].strip()
 
     def to_verl_record(
         self,
