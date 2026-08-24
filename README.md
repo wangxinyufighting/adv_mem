@@ -114,7 +114,7 @@ bash train.sh --rounds 20
 - Full Graph：`data/longmemeval/memory_graph_fullgraph5.json`
 - Backbone：`Qwen/Qwen3-0.6B`
 - 每个 case 采样 16 条 Route
-- 每轮处理 8 个 Question
+- 每轮为每个 case 处理 8 个 Question
 - Attacker 和 Memory Builder 各训练 1 epoch
 
 常用参数：
@@ -123,7 +123,7 @@ bash train.sh --rounds 20
 bash train.sh \
   --rounds 5 \
   --routes-per-case 16 \
-  --candidates-per-round 8 \
+  --candidates-per-case 8 \
   --epochs 1 \
   --batch-size 8 \
   --gpus 1 \
@@ -133,14 +133,14 @@ bash train.sh \
   --work-dir data/training
 ```
 
-Stop Condition 需要连续 `--stop-patience` 轮同时满足：
+每个 case 独立计算 Stop Condition，需要连续 `--stop-patience` 轮同时满足：
 
 - 至少 `--stop-min-valid` 个独立审计问题都能由 `M_t` 回答，且
   High-Priority Buffer 为空。
 - Memory Builder 在指定数量的 neighborhood 中找不到不引起
   `linked_questions` 回归的 DELETE/MERGE。
 
-`--rounds` 是仍然生效的硬上限。
+全部 case 停止后训练结束，`--rounds` 是仍然生效的硬上限。
 
 ## 数据构建
 
@@ -181,14 +181,15 @@ data/training/
 
 `run_state.json` 保存：
 
-- 当前记忆 `M_t`
-- Success Pool 和 High-Priority Buffer
-- 问题档案
+- 每个 case 独立的 `M_t`
+- 每个 case 独立的 Success Pool、High-Priority Buffer 和问题档案
+- 每个 case 独立的 Stop State
 - Attacker 和 Memory Builder 模型路径
 - 下一个训练轮次
 
 使用相同的 `--work-dir` 重新执行命令会从下一轮继续。使用新的
-`--work-dir` 即可开始一个全新实验。
+`--work-dir` 即可开始一个全新实验。旧版单一 `M_t` 的 `run_state.json`
+不能继续使用。
 
 ## 核心文件
 

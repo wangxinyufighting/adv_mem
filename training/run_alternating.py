@@ -1,6 +1,5 @@
 import argparse
 import hashlib
-import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,7 +13,11 @@ from defender.reward import MemoryBuilderReward
 from defender.reward_judge import DeepSeekMemoryJudge
 from memory.models import MemoryState
 from memory.store import MemoryStore
-from training.alternating import MemoryTrainingFlow, QuestionCandidate
+from training.alternating import (
+    MemoryTrainingFlow,
+    PendingMemoryEdit,
+    QuestionCandidate,
+)
 from training.dataset_builder import (
     AttackerDatasetBuilder,
     memory_builder_records,
@@ -39,10 +42,25 @@ ROOT = Path(__file__).resolve().parents[1]
 class RunConfig:
     rounds: int
     routes_per_case: int
-    candidates_per_round: int
+    candidates_per_case: int
     work_dir: Path
     policy_port: int
     gpu_memory_utilization: float
+
+
+@dataclass
+class CaseRound:
+    store: MemoryStore
+    flow: MemoryTrainingFlow
+    candidates: tuple[QuestionCandidate, ...]
+    fresh: tuple[QuestionCandidate, ...]
+    pending: tuple[PendingMemoryEdit, ...]
+    defended: int
+    committed: int = 0
+    discarded: int = 0
+    attacker_saturated: bool = False
+    builder_saturated: bool = False
+    compaction_attempts: int = 0
 
 
 class QuestionCollector:
@@ -116,8 +134,8 @@ class QuestionCollector:
 
 def run(config: RunConfig, args: argparse.Namespace) -> None:
     state_path = config.work_dir / "run_state.json"
-    state = RunState.load(state_path, args.model)
     reader = LongMemEvalGraphReader(args.graph, args.longmemeval, args.graph_version)
+    state = RunState.load(state_path, args.model, reader.available_cases())
     retriever = HybridMemoryRetriever.from_env()
     attacker = Attacker()
     builder = MemoryBuilder()
@@ -130,13 +148,21 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         min_valid_questions=args.stop_min_valid,
         max_neighborhoods=args.compaction_neighborhoods,
     )
-    stop_condition = StopCondition(stop_config, state.stop_state)
     runner = VerlRunner(
         ROOT,
         VerlConfig(args.epochs, args.batch_size, args.gpus),
     )
 
     for round_index in range(state.next_round, state.next_round + config.rounds):
+        active_cases = {
+            case_index: case_state
+            for case_index, case_state in state.cases.items()
+            if not case_state.stopped
+        }
+        if not active_cases:
+            print("All cases have reached the stop condition")
+            break
+
         round_dir = config.work_dir / f"round_{round_index:03d}"
         route_builder = AttackerDatasetBuilder(
             reader,
@@ -144,9 +170,14 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             attacker,
             seed=args.seed + round_index,
         )
-        attacker_records = route_builder.records(
-            state.memory,
-            config.routes_per_case,
+        attacker_records = tuple(
+            record
+            for case_index, case_state in active_cases.items()
+            for record in route_builder.records(
+                case_index,
+                case_state.memory,
+                config.routes_per_case,
+            )
         )
         attacker_data = write_verl_dataset(
             attacker_records,
@@ -161,21 +192,12 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             round_dir / "attacker",
         )
 
-        high_priority = [
-            state.questions[question_id]
-            for question_id in state.memory.high_priority_buffer
-            if question_id in state.questions
-        ][: config.candidates_per_round]
-        fresh_count = config.candidates_per_round - len(high_priority)
-        attempts = max(fresh_count * 5, fresh_count)
-        route_count = max(1, math.ceil(attempts / len(reader)))
         audit_route_builder = AttackerDatasetBuilder(
             reader,
             retriever,
             attacker,
             seed=args.seed + 100_000 + round_index,
         )
-        routes = audit_route_builder.routes(route_count)
         with VLLMPolicyServer(
             runner.verl_dir,
             state.attacker_model,
@@ -183,39 +205,68 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             round_dir / "attacker_server.log",
             config.gpu_memory_utilization,
         ) as policy:
-            fresh = collector.collect(
-                policy,
-                routes,
-                state.memory,
+            candidates_by_case = {}
+            fresh_by_case = {}
+            for case_index, case_state in active_cases.items():
+                high_priority = tuple(
+                    case_state.questions[question_id]
+                    for question_id in case_state.memory.high_priority_buffer
+                    if question_id in case_state.questions
+                )[: config.candidates_per_case]
+                fresh_count = config.candidates_per_case - len(high_priority)
+                routes = audit_route_builder.routes(
+                    case_index,
+                    fresh_count * 5,
+                )
+                fresh = collector.collect(
+                    policy,
+                    routes,
+                    case_state.memory,
+                    retriever,
+                    fresh_count,
+                    {
+                        item.oracle.question
+                        for item in case_state.questions.values()
+                    },
+                )
+                case_state.questions.update(
+                    {item.question_id: item for item in fresh}
+                )
+                candidates_by_case[case_index] = high_priority + fresh
+                fresh_by_case[case_index] = fresh
+
+        case_rounds = {}
+        builder_records = []
+        for case_index, case_state in active_cases.items():
+            store = MemoryStore(case_state.memory)
+            flow = MemoryTrainingFlow(
+                store,
                 retriever,
-                fresh_count,
-                {item.oracle.question for item in state.questions.values()},
+                answer_agent,
+                answer_judge,
+                builder,
             )
-        candidates = tuple(high_priority) + fresh
-        for item in fresh:
-            state.questions[item.question_id] = item
+            candidates = candidates_by_case[case_index]
+            pending = tuple(
+                item
+                for candidate in candidates
+                if (item := flow.process_question(candidate)) is not None
+            )
+            case_rounds[case_index] = CaseRound(
+                store,
+                flow,
+                candidates,
+                fresh_by_case[case_index],
+                pending,
+                len(candidates) - len(pending),
+            )
+            builder_records.extend(
+                memory_builder_records(pending, store.state, builder)
+            )
 
-        store = MemoryStore(state.memory)
-        flow = MemoryTrainingFlow(
-            store,
-            retriever,
-            answer_agent,
-            answer_judge,
-            builder,
-        )
-        pending = tuple(
-            item
-            for candidate in candidates
-            if (item := flow.process_question(candidate)) is not None
-        )
-        defended = len(candidates) - len(pending)
-        committed = 0
-        discarded = 0
-
-        if pending:
-            records = memory_builder_records(pending, store.state, builder)
+        if builder_records:
             builder_data = write_verl_dataset(
-                records,
+                builder_records,
                 round_dir / "memory_builder_data",
                 seed=args.seed + round_index,
             )
@@ -242,53 +293,61 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 round_dir / "memory_builder_server.log",
                 config.gpu_memory_utilization,
             ) as policy:
-                for old_pending in pending:
-                    current = flow.process_question(old_pending.candidate)
-                    if current is None:
-                        defended += 1
-                        continue
-                    response = policy.generate(
-                        builder.build_prompt(current.observation),
-                        512,
-                    )
-                    reward = reward_model.evaluate(
-                        response,
-                        flow.reward_context(current),
-                    )
-                    if reward["score"] <= flow.commit_threshold:
-                        flow.discard(current)
-                        discarded += 1
-                        continue
-                    action = builder.parse_action(response)
-                    if flow.commit(current, action, reward):
-                        committed += 1
-                    else:
-                        discarded += 1
+                for case_round in case_rounds.values():
+                    for old_pending in case_round.pending:
+                        current = case_round.flow.process_question(
+                            old_pending.candidate
+                        )
+                        if current is None:
+                            case_round.defended += 1
+                            continue
+                        response = policy.generate(
+                            builder.build_prompt(current.observation),
+                            512,
+                        )
+                        reward = reward_model.evaluate(
+                            response,
+                            case_round.flow.reward_context(current),
+                        )
+                        if reward["score"] <= case_round.flow.commit_threshold:
+                            case_round.flow.discard(current)
+                            case_round.discarded += 1
+                            continue
+                        action = builder.parse_action(response)
+                        if case_round.flow.commit(current, action, reward):
+                            case_round.committed += 1
+                        else:
+                            case_round.discarded += 1
 
-        unresolved = tuple(
-            item
-            for candidate in candidates
-            if (item := flow.process_question(candidate)) is not None
-        )
-        for item in unresolved:
-            flow.discard(item)
-        fresh_ids = {candidate.question_id for candidate in fresh}
-        attacker_saturated = (
-            len(fresh) >= stop_config.min_valid_questions
-            and not any(item.candidate.question_id in fresh_ids for item in unresolved)
-            and not store.state.high_priority_buffer
-        )
-        builder_saturated = False
-        compaction_attempts = 0
-        if attacker_saturated and store.state.active_nodes:
-            auditor = CompactionAuditor(
-                builder,
-                retriever,
-                answer_agent,
-                answer_judge,
-                state.questions,
-                stop_config,
+        compact_cases = []
+        for case_index, case_round in case_rounds.items():
+            unresolved = tuple(
+                item
+                for candidate in case_round.candidates
+                if (
+                    item := case_round.flow.process_question(candidate)
+                ) is not None
             )
+            for item in unresolved:
+                case_round.flow.discard(item)
+            fresh_ids = {
+                candidate.question_id for candidate in case_round.fresh
+            }
+            case_round.attacker_saturated = (
+                len(case_round.fresh) >= stop_config.min_valid_questions
+                and not any(
+                    item.candidate.question_id in fresh_ids
+                    for item in unresolved
+                )
+                and not case_round.store.state.high_priority_buffer
+            )
+            if case_round.attacker_saturated:
+                if case_round.store.state.active_nodes:
+                    compact_cases.append(case_index)
+                else:
+                    case_round.builder_saturated = True
+
+        if compact_cases:
             with VLLMPolicyServer(
                 runner.verl_dir,
                 state.builder_model,
@@ -296,29 +355,48 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 round_dir / "compaction_server.log",
                 config.gpu_memory_utilization,
             ) as policy:
-                audit = auditor.audit(policy, store.state)
-            store.state = audit.memory
-            builder_saturated = not audit.compressed
-            compaction_attempts = audit.attempts
-        elif attacker_saturated:
-            builder_saturated = True
+                for case_index in compact_cases:
+                    case_state = active_cases[case_index]
+                    case_round = case_rounds[case_index]
+                    auditor = CompactionAuditor(
+                        builder,
+                        retriever,
+                        answer_agent,
+                        answer_judge,
+                        case_state.questions,
+                        stop_config,
+                    )
+                    audit = auditor.audit(policy, case_round.store.state)
+                    case_round.store.state = audit.memory
+                    case_round.builder_saturated = not audit.compressed
+                    case_round.compaction_attempts = audit.attempts
 
-        stopped = stop_condition.update(attacker_saturated, builder_saturated)
+        for case_index, case_round in case_rounds.items():
+            case_state = active_cases[case_index]
+            case_state.stopped = StopCondition(
+                stop_config,
+                case_state.stop_state,
+            ).update(
+                case_round.attacker_saturated,
+                case_round.builder_saturated,
+            )
+            case_round.store.advance_iteration()
+            case_state.memory = case_round.store.state
+            print(
+                f"Round {round_index}, case {case_index}: "
+                f"defended={case_round.defended}, "
+                f"committed={case_round.committed}, "
+                f"discarded={case_round.discarded}, "
+                f"memory_nodes={len(case_state.memory.active_nodes)}, "
+                f"attack_saturated={case_round.attacker_saturated}, "
+                f"builder_saturated={case_round.builder_saturated}, "
+                f"compaction_attempts={case_round.compaction_attempts}"
+            )
 
-        store.advance_iteration()
-        state.memory = store.state
         state.next_round = round_index + 1
         state.save(state_path)
-        print(
-            f"Round {round_index} complete: defended={defended}, "
-            f"committed={committed}, discarded={discarded}, "
-            f"memory_nodes={len(state.memory.active_nodes)}, "
-            f"attack_saturated={attacker_saturated}, "
-            f"builder_saturated={builder_saturated}, "
-            f"compaction_attempts={compaction_attempts}"
-        )
-        if stopped:
-            print("Stop condition reached")
+        if all(case_state.stopped for case_state in state.cases.values()):
+            print("All cases have reached the stop condition")
             break
 
 
@@ -337,7 +415,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--work-dir", type=Path, default=ROOT / "data/training")
     parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--routes-per-case", type=int, default=16)
-    parser.add_argument("--candidates-per-round", type=int, default=8)
+    parser.add_argument("--candidates-per-case", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--gpus", type=int, default=1)
@@ -355,7 +433,7 @@ def main() -> None:
     config = RunConfig(
         rounds=args.rounds,
         routes_per_case=args.routes_per_case,
-        candidates_per_round=args.candidates_per_round,
+        candidates_per_case=args.candidates_per_case,
         work_dir=args.work_dir,
         policy_port=args.policy_port,
         gpu_memory_utilization=args.gpu_memory_utilization,

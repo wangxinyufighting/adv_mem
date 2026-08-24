@@ -65,31 +65,31 @@ class AttackerDatasetBuilder:
         self.attacker = attacker or Attacker()
         self.seed = seed
 
-    def routes(self, routes_per_case: int) -> tuple:
+    def routes(self, case_index: int, count: int) -> tuple:
         config = RouterConfig(random_seed=self.seed)
         router = GraphRouterPolicy(config)
         modes = tuple(AttackMode)
-        routes = []
-        for case_index in self.reader.available_cases():
-            graph = MemoryGraphView.from_case(
-                self.reader.get_case(case_index),
-                self.reader.version,
-            )
-            for index in range(routes_per_case):
-                routes.append(router.route(graph, modes[index % len(modes)]))
-        return tuple(routes)
+        graph = MemoryGraphView.from_case(
+            self.reader.get_case(case_index),
+            self.reader.version,
+        )
+        return tuple(
+            router.route(graph, modes[index % len(modes)])
+            for index in range(count)
+        )
 
     def records(
         self,
+        case_index: int,
         memory: MemoryState,
-        routes_per_case: int,
+        count: int,
     ) -> tuple[dict[str, Any], ...]:
         return tuple(
             self.attacker.to_verl_record(
                 self.attacker.observe(route, memory, self.retriever),
                 memory,
             )
-            for route in self.routes(routes_per_case)
+            for route in self.routes(case_index, count)
         )
 
 
