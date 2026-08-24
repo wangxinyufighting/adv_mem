@@ -41,6 +41,11 @@ if [[ ! -x "${CUDA124_ENV_DIR}/bin/python" ]]; then
 fi
 export PYTHON_BIN=${CUDA124_ENV_DIR}/bin/python
 
+if ! "${PYTHON_BIN}" -c 'import pkg_resources' >/dev/null 2>&1; then
+    echo "Installing Verl-compatible setuptools..."
+    "${PYTHON_BIN}" -m pip install "setuptools==80.9.0"
+fi
+
 "${PYTHON_BIN}" -c \
     'import flash_attn, torch, vllm; assert torch.version.cuda == "12.4", f"Expected CUDA 12.4, got {torch.version.cuda}"; assert vllm.__version__ == "0.8.5.post1", vllm.__version__'
 

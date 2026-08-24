@@ -34,6 +34,7 @@ Python 3.10-3.12。训练环境固定为：
 - PyTorch 2.6.0+cu124
 - vLLM 0.8.5.post1
 - FlashAttention 2.7.4.post1
+- Setuptools 80.9.0
 - Verl 0.4.1.dev
 
 首次执行 `train.sh` 会自动创建 `.venv-cu124`，不使用 `uv`。也可先手动安装：
@@ -77,6 +78,7 @@ export BGE_RERANKER_MODEL=bge-reranker-v2-m3
 
 export ANSWER_AGENT_API_BASE=http://localhost:8001/v1
 export ANSWER_AGENT_MODEL=Qwen/Qwen3-0.6B
+export TRAIN_MODEL=Qwen/Qwen3-0.6B
 ```
 
 启动固定 Answer Agent：
@@ -143,6 +145,16 @@ bash train.sh \
 全部 case 停止后训练结束，`--rounds` 是仍然生效的硬上限。
 
 ## 数据构建
+
+从 Neo4j 导出指定 version 的前 `n` 个 case：
+
+```bash
+python scripts/export_memory_graph.py --version fullgraph5 --num-cases 5
+```
+
+脚本会导出 case `0..n-1`，默认写入
+`data/longmemeval/memory_graph_<version>.json`。Neo4j 连接使用
+`.env.example` 中的 `NEO4J_*` 变量，也可用 `--output` 指定其他路径。
 
 Full Graph 不会直接交给 Verl。数据经过以下组件转换：
 

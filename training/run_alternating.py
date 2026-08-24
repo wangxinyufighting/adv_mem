@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -411,7 +412,13 @@ def parse_args() -> argparse.Namespace:
         default=ROOT / "data/longmemeval/longmemeval_s.json",
     )
     parser.add_argument("--graph-version", default="fullgraph5")
-    parser.add_argument("--model", default="Qwen/Qwen3-0.6B")
+    parser.add_argument(
+        "--model",
+        default=os.getenv(
+            "TRAIN_MODEL",
+            os.getenv("ANSWER_AGENT_MODEL", "Qwen/Qwen3-0.6B"),
+        ),
+    )
     parser.add_argument("--work-dir", type=Path, default=ROOT / "data/training")
     parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--routes-per-case", type=int, default=16)

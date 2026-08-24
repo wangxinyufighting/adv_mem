@@ -22,7 +22,7 @@ fi
 "${PYTHON}" -m venv "${ENV_DIR}"
 PYTHON_BIN=${ENV_DIR}/bin/python
 
-"${PYTHON_BIN}" -m pip install --upgrade pip setuptools wheel
+"${PYTHON_BIN}" -m pip install --upgrade pip "setuptools==80.9.0" wheel
 "${PYTHON_BIN}" -m pip install -r "${ROOT}/requirements-cu124.txt"
 
 PY_TAG=$("${PYTHON_BIN}" -c \
