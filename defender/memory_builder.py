@@ -25,7 +25,9 @@ revising it. Target only node IDs from memory_neighborhood.
 
 Return JSON only:
 {"operation":"add|merge|delete|noop","target_node_ids":[],"new_memory":{"content":"...","tags":["..."]}|null}
-new_memory is required for ADD and MERGE and must be null for DELETE and NOOP."""
+new_memory is required for ADD and MERGE and must be null for DELETE and NOOP.
+
+/no_think"""
 
 COMPACTION_PROMPT = """Compress a long-term memory without losing information.
 Use MERGE to replace at least two memories with one shorter complete memory. Use
@@ -33,7 +35,9 @@ DELETE only when a memory is redundant. Otherwise use NOOP. Preserve every fact
 needed by linked_questions and target only IDs from memory_neighborhood.
 
 Return JSON only:
-{"operation":"merge|delete|noop","target_node_ids":[],"new_memory":{"content":"...","tags":["..."]}|null}"""
+{"operation":"merge|delete|noop","target_node_ids":[],"new_memory":{"content":"...","tags":["..."]}|null}
+
+/no_think"""
 
 
 class MemoryBuilder:

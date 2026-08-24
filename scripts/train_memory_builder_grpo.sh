@@ -12,6 +12,7 @@ PPO_MICRO_BATCH_SIZE=${PPO_MICRO_BATCH_SIZE:-1}
 ROLLOUT_N=${ROLLOUT_N:-4}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-1}
 CHECKPOINT_DIR=${CHECKPOINT_DIR:-${ROOT}/checkpoints/memory_builder}
+ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-${CHECKPOINT_DIR}/rollouts}
 VERL_HOME=${VERL_HOME:-${ROOT}/.verl-cu124-src}
 PYTHON_BIN=${PYTHON_BIN:-${ROOT}/.venv-cu124/bin/python}
 
@@ -51,6 +52,7 @@ cd "${VERL_HOME}"
     trainer.project_name=adv_mem \
     trainer.experiment_name=memory_builder_qwen3_0.6b_grpo \
     trainer.default_local_dir="${CHECKPOINT_DIR}" \
+    trainer.rollout_data_dir="${ROLLOUT_DATA_DIR}" \
     trainer.n_gpus_per_node="${NGPUS}" \
     trainer.nnodes=1 \
     trainer.save_freq=10 \

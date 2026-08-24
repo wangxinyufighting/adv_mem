@@ -20,7 +20,9 @@ memory neighborhood, and different from prior questions. Follow the attack mode:
 - comparison: compare the two evidence facts.
 
 Write a natural standalone question. Do not include the answer, evidence, node IDs,
-or explanations. Return JSON only: {"question":"..."}"""
+or explanations. Return JSON only: {"question":"..."}
+
+/no_think"""
 
 
 class Attacker:

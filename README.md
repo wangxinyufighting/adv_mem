@@ -179,17 +179,23 @@ PendingMemoryEdit
 
 ```text
 data/training/
+  services/training.log
   run_state.json
   round_000/
     attacker_data/
     attacker/checkpoints/
+      rollouts/<step>.jsonl
     attacker/model/
     memory_builder_data/
     memory_builder/checkpoints/
+      rollouts/<step>.jsonl
     memory_builder/model/
   round_001/
     ...
 ```
+
+`training.log` 保存终端训练日志。`rollouts/<step>.jsonl` 保存每个样本的
+prompt、模型输出、总 reward 和各 reward 分项，用于检查实际生成内容。
 
 `run_state.json` 保存：
 

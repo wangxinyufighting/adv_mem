@@ -168,4 +168,5 @@ wait_for_service \
     "${RERANKER_LOG}"
 
 CUDA_VISIBLE_DEVICES=${TRAIN_GPUS} \
-    bash "${ROOT}/scripts/run_alternating.sh" "$@"
+    bash "${ROOT}/scripts/run_alternating.sh" "$@" \
+    2>&1 | tee -a "${LOG_DIR}/training.log"
