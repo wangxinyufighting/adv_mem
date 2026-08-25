@@ -127,10 +127,13 @@ class MemoryBuilderReward:
         if not targets <= neighborhood_ids:
             return False
 
+        has_memory = action.new_memory is not None and bool(
+            estimate_token_count(action.new_memory.content)
+        )
         if action.operation == MemoryOperation.ADD:
-            return not targets and action.new_memory is not None
+            return not targets and has_memory
         if action.operation == MemoryOperation.MERGE:
-            return bool(targets) and action.new_memory is not None
+            return bool(targets) and has_memory
         if action.operation == MemoryOperation.DELETE:
             return bool(targets) and action.new_memory is None
         return not targets and action.new_memory is None

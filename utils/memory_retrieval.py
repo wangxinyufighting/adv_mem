@@ -112,6 +112,8 @@ class BM25MemoryRetriever:
             token for document in documents for token in set(document)
         )
         average_length = sum(map(len, documents)) / len(documents)
+        if average_length == 0:
+            return [0.0] * len(nodes)
         return [
             self._score_document(
                 query_tokens,
