@@ -147,10 +147,14 @@ class MemoryState:
                 record.to_dict() for record in self.capability_ledger.values()
             ],
             "edit_history": [asdict(record) for record in self.edit_history],
-            "evidence_ledger": {
-                question_id: [asdict(item) for item in evidence]
+            # A list keeps the Parquet schema stable across different question IDs.
+            "evidence_ledger": [
+                {
+                    "question_id": question_id,
+                    "evidence": [asdict(item) for item in evidence],
+                }
                 for question_id, evidence in self.evidence_ledger.items()
-            },
+            ],
             "success_pool": list(self.success_pool),
             "high_priority_buffer": list(self.high_priority_buffer),
         }
@@ -167,6 +171,14 @@ class MemoryState:
             item["target_node_ids"] = tuple(item["target_node_ids"])
             item["result_node_ids"] = tuple(item["result_node_ids"])
             edits.append(MemoryEditRecord(**item))
+        evidence_records = payload["evidence_ledger"]
+        if isinstance(evidence_records, dict):
+            # Read run_state.json files written before the Parquet-safe format.
+            evidence_records = [
+                {"question_id": question_id, "evidence": evidence}
+                for question_id, evidence in evidence_records.items()
+                if evidence is not None
+            ]
         return cls(
             version=payload["version"],
             iteration=payload["iteration"],
@@ -174,8 +186,10 @@ class MemoryState:
             capability_ledger={record.question_id: record for record in records},
             edit_history=edits,
             evidence_ledger={
-                question_id: tuple(MemoryEvidence(**item) for item in evidence)
-                for question_id, evidence in payload["evidence_ledger"].items()
+                record["question_id"]: tuple(
+                    MemoryEvidence(**item) for item in record["evidence"]
+                )
+                for record in evidence_records
             },
             success_pool=list(payload["success_pool"]),
             high_priority_buffer=list(payload["high_priority_buffer"]),
