@@ -7,6 +7,7 @@ from openai import OpenAI
 
 from attacker.models import OracleResult, SupportingEvidence
 from memory.models import CapabilityRecord, MemoryEditAction, MemoryNode
+from utils.json_output import retry_json_object
 
 
 SYSTEM_PROMPT = """Evaluate a proposed long-term memory edit.
@@ -38,7 +39,7 @@ class MemoryJudgeResult:
 
 
 class DeepSeekMemoryJudge:
-    def __init__(self, client: Any, model: str, max_tokens: int = 500):
+    def __init__(self, client: Any, model: str, max_tokens: int = 1536):
         self.client = client
         self.model = model
         self.max_tokens = max_tokens
@@ -51,6 +52,7 @@ class DeepSeekMemoryJudge:
                 base_url=os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com"),
             ),
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            max_tokens=int(os.getenv("MEMORY_JUDGE_MAX_TOKENS", "1536")),
         )
 
     def evaluate(
@@ -82,26 +84,39 @@ class DeepSeekMemoryJudge:
                 for item in protected_answers
             ],
         }
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": json.dumps(payload, ensure_ascii=False),
-                },
-            ],
-            response_format={"type": "json_object"},
-            temperature=0,
-            max_tokens=self.max_tokens,
+
+        def request():
+            return self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": json.dumps(payload, ensure_ascii=False),
+                    },
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+                max_tokens=self.max_tokens,
+            )
+
+        required = (
+            "after_correctness",
+            "groundedness",
+            "action_quality",
+            "memory_quality",
+            "retention_correctness",
         )
-        result = json.loads(response.choices[0].message.content)
-        return MemoryJudgeResult(
-            after_correctness=float(result["after_correctness"]),
-            groundedness=float(result["groundedness"]),
-            action_quality=float(result["action_quality"]),
-            memory_quality=float(result["memory_quality"]),
-            retention_correctness=tuple(
-                float(score) for score in result["retention_correctness"]
+        return retry_json_object(
+            request,
+            required,
+            lambda result: MemoryJudgeResult(
+                after_correctness=float(result["after_correctness"]),
+                groundedness=float(result["groundedness"]),
+                action_quality=float(result["action_quality"]),
+                memory_quality=float(result["memory_quality"]),
+                retention_correctness=tuple(
+                    float(score) for score in result["retention_correctness"]
+                ),
             ),
         )

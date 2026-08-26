@@ -33,6 +33,7 @@ from training.stop_condition import (
 )
 from training.verl_runner import VerlConfig, VerlRunner
 from utils.longmemeval_graph_reader import LongMemEvalGraphReader
+from utils.json_output import StructuredOutputError
 from utils.memory_retrieval import HybridMemoryRetriever
 
 
@@ -103,18 +104,21 @@ class QuestionCollector:
             if not question or question in prior_questions:
                 continue
 
-            oracle = self.oracle.evaluate(question, route)
-            if not oracle.valid:
+            try:
+                oracle = self.oracle.evaluate(question, route)
+                if not oracle.valid:
+                    continue
+                golden_answer = self.answer_agent.answer_sources(
+                    question,
+                    route.source_records,
+                )
+                judged = self.judge.evaluate(
+                    oracle,
+                    golden_answer,
+                    "INSUFFICIENT_INFORMATION",
+                )
+            except StructuredOutputError:
                 continue
-            golden_answer = self.answer_agent.answer_sources(
-                question,
-                route.source_records,
-            )
-            judged = self.judge.evaluate(
-                oracle,
-                golden_answer,
-                "INSUFFICIENT_INFORMATION",
-            )
             if (
                 judged.gold_correctness < 0.8
                 or judged.value < self.value_threshold
@@ -248,10 +252,14 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 builder,
             )
             candidates = candidates_by_case[case_index]
+            evaluations = tuple(
+                (candidate, *flow.try_process_question(candidate))
+                for candidate in candidates
+            )
             pending = tuple(
                 item
-                for candidate in candidates
-                if (item := flow.process_question(candidate)) is not None
+                for _, available, item in evaluations
+                if available and item is not None
             )
             case_rounds[case_index] = CaseRound(
                 store,
@@ -259,7 +267,10 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 candidates,
                 fresh_by_case[case_index],
                 pending,
-                len(candidates) - len(pending),
+                sum(
+                    available and item is None
+                    for _, available, item in evaluations
+                ),
             )
             builder_records.extend(
                 memory_builder_records(pending, store.state, builder)
@@ -296,9 +307,12 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             ) as policy:
                 for case_round in case_rounds.values():
                     for old_pending in case_round.pending:
-                        current = case_round.flow.process_question(
+                        available, current = case_round.flow.try_process_question(
                             old_pending.candidate
                         )
+                        if not available:
+                            case_round.flow.defer_question(old_pending.candidate)
+                            continue
                         if current is None:
                             case_round.defended += 1
                             continue
@@ -310,6 +324,9 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                             response,
                             case_round.flow.reward_context(current),
                         )
+                        if not reward.get("reward_available", 1.0):
+                            case_round.flow.defer_question(current.candidate)
+                            continue
                         if reward["score"] <= case_round.flow.commit_threshold:
                             case_round.flow.discard(current)
                             case_round.discarded += 1
@@ -322,20 +339,26 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
 
         compact_cases = []
         for case_index, case_round in case_rounds.items():
+            evaluations = tuple(
+                (candidate, *case_round.flow.try_process_question(candidate))
+                for candidate in case_round.candidates
+            )
             unresolved = tuple(
                 item
-                for candidate in case_round.candidates
-                if (
-                    item := case_round.flow.process_question(candidate)
-                ) is not None
+                for _, available, item in evaluations
+                if available and item is not None
             )
-            for item in unresolved:
-                case_round.flow.discard(item)
+            for candidate, available, item in evaluations:
+                if not available:
+                    case_round.flow.defer_question(candidate)
+                elif item is not None:
+                    case_round.flow.discard(item)
             fresh_ids = {
                 candidate.question_id for candidate in case_round.fresh
             }
             case_round.attacker_saturated = (
                 len(case_round.fresh) >= stop_config.min_valid_questions
+                and all(available for _, available, _ in evaluations)
                 and not any(
                     item.candidate.question_id in fresh_ids
                     for item in unresolved

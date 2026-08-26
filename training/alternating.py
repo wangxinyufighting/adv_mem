@@ -13,6 +13,7 @@ from memory.models import (
     MemoryState,
 )
 from memory.store import MemoryStore
+from utils.json_output import StructuredOutputError
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,16 @@ class MemoryTrainingFlow:
             before_correctness=judged.memory_correctness,
         )
 
+    def try_process_question(
+        self,
+        candidate: QuestionCandidate,
+    ) -> tuple[bool, PendingMemoryEdit | None]:
+        """Return availability separately so Judge failure is not a defense result."""
+        try:
+            return True, self.process_question(candidate)
+        except StructuredOutputError:
+            return False, None
+
     def reward_context(
         self,
         pending: PendingMemoryEdit,
@@ -170,6 +181,12 @@ class MemoryTrainingFlow:
         self.store.mark_high_priority(
             pending.capability,
             self._evidence(pending.candidate),
+        )
+
+    def defer_question(self, candidate: QuestionCandidate) -> None:
+        self.store.mark_high_priority(
+            self._capability(candidate),
+            self._evidence(candidate),
         )
 
     def high_priority_questions(self) -> tuple[CapabilityRecord, ...]:
@@ -237,11 +254,21 @@ class AlternatingTrainer:
             self.flow.high_priority_questions(),
         )
 
+        evaluations = tuple(
+            self.flow.try_process_question(candidate) for candidate in candidates
+        )
         pending = tuple(
             item
-            for candidate in candidates
-            if (item := self.flow.process_question(candidate)) is not None
+            for available, item in evaluations
+            if available and item is not None
         )
+        for candidate, (available, _) in zip(
+            candidates,
+            evaluations,
+            strict=True,
+        ):
+            if not available:
+                self.flow.defer_question(candidate)
         builder_records = tuple(
             self.builder.to_verl_record(
                 item.observation,
@@ -253,13 +280,16 @@ class AlternatingTrainer:
         )
         builder_checkpoint = train_builder(builder_records) if builder_records else None
 
-        defended = len(candidates) - len(pending)
+        defended = sum(available and item is None for available, item in evaluations)
         committed = 0
         discarded = 0
         if builder_checkpoint:
             for item in pending:
                 # Earlier commits may already make this question answerable.
-                refreshed = self.flow.process_question(item.candidate)
+                available, refreshed = self.flow.try_process_question(item.candidate)
+                if not available:
+                    self.flow.defer_question(item.candidate)
+                    continue
                 if refreshed is None:
                     defended += 1
                     continue
@@ -269,6 +299,9 @@ class AlternatingTrainer:
                 )
                 context = self.flow.reward_context(refreshed)
                 reward = score_action(response, context)
+                if not reward.get("reward_available", 1.0):
+                    self.flow.defer_question(refreshed.candidate)
+                    continue
                 if reward["score"] <= self.flow.commit_threshold:
                     self.flow.discard(refreshed)
                     discarded += 1

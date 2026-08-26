@@ -6,6 +6,7 @@ from typing import Any
 from openai import OpenAI
 
 from attacker.models import OracleResult
+from utils.json_output import retry_json_object
 
 
 SYSTEM_PROMPT = """Evaluate a memory question and two candidate answers.
@@ -29,7 +30,7 @@ class DeepSeekRewardJudge:
         self,
         client: Any,
         model: str,
-        max_tokens: int = 300,
+        max_tokens: int = 1024,
     ):
         self.client = client
         self.model = model
@@ -43,6 +44,7 @@ class DeepSeekRewardJudge:
                 base_url=os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com"),
             ),
             model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            max_tokens=int(os.getenv("ATTACKER_JUDGE_MAX_TOKENS", "1024")),
         )
 
     def evaluate(
@@ -65,22 +67,28 @@ class DeepSeekRewardJudge:
             "golden_answer": golden_answer,
             "memory_answer": memory_answer,
         }
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": json.dumps(payload, ensure_ascii=False),
-                },
-            ],
-            response_format={"type": "json_object"},
-            temperature=0,
-            max_tokens=self.max_tokens,
-        )
-        result = json.loads(response.choices[0].message.content)
-        return RewardJudgeResult(
-            gold_correctness=float(result["gold_correctness"]),
-            memory_correctness=float(result["memory_correctness"]),
-            value=float(result["value"]),
+
+        def request():
+            return self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": json.dumps(payload, ensure_ascii=False),
+                    },
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+                max_tokens=self.max_tokens,
+            )
+
+        return retry_json_object(
+            request,
+            ("gold_correctness", "memory_correctness", "value"),
+            lambda result: RewardJudgeResult(
+                gold_correctness=float(result["gold_correctness"]),
+                memory_correctness=float(result["memory_correctness"]),
+                value=float(result["value"]),
+            ),
         )

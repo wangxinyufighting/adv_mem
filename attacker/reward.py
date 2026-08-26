@@ -15,7 +15,11 @@ from attacker.models import (
 )
 from attacker.oracle import DeepSeekOracle
 from attacker.reward_judge import DeepSeekRewardJudge
-from utils.json_output import is_clean_json_object, parse_json_object
+from utils.json_output import (
+    StructuredOutputError,
+    is_clean_json_object,
+    parse_json_object,
+)
 from utils.memory_retrieval import HybridMemoryRetriever
 
 
@@ -98,7 +102,15 @@ class AttackerReward:
                 stage="question_invalid",
             )
 
-        oracle = self.oracle.evaluate(question, context.route)
+        try:
+            oracle = self.oracle.evaluate(question, context.route)
+        except StructuredOutputError as error:
+            return self._finish(
+                self._neutral(format_valid),
+                trace,
+                stage="oracle_unavailable",
+                error=str(error),
+            )
         if not oracle.valid:
             return self._finish(
                 self._invalid(format_valid=format_valid),
@@ -122,7 +134,15 @@ class AttackerReward:
             question,
             tuple(result.node for result in memory_results),
         )
-        judged = self.judge.evaluate(oracle, golden_answer, memory_answer)
+        try:
+            judged = self.judge.evaluate(oracle, golden_answer, memory_answer)
+        except StructuredOutputError as error:
+            return self._finish(
+                self._neutral(format_valid, oracle_valid=1.0),
+                trace,
+                stage="judge_unavailable",
+                error=str(error),
+            )
         trace.update(
             {
                 "oracle_answer": oracle.answer,
@@ -160,6 +180,7 @@ class AttackerReward:
             "uncovered": uncovered,
             "novelty": novelty,
             "route_fidelity": fidelity,
+            "reward_available": 1.0,
         }
         return self._finish(result, trace, stage="scored")
 
@@ -230,4 +251,23 @@ class AttackerReward:
             "uncovered": 0.0,
             "novelty": 0.0,
             "route_fidelity": 0.0,
+            "reward_available": 1.0,
+        }
+
+    @staticmethod
+    def _neutral(
+        format_valid: float,
+        oracle_valid: float = 0.0,
+    ) -> dict[str, float]:
+        return {
+            "score": 0.0,
+            "format_valid": format_valid,
+            "oracle_valid": oracle_valid,
+            "gold_correctness": 0.0,
+            "memory_correctness": 0.0,
+            "value": 0.0,
+            "uncovered": 0.0,
+            "novelty": 0.0,
+            "route_fidelity": 0.0,
+            "reward_available": 0.0,
         }

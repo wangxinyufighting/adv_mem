@@ -8,6 +8,7 @@ from defender.models import MemoryBuilderRewardContext
 from defender.reward_judge import DeepSeekMemoryJudge, ProtectedAnswer
 from memory.models import CapabilityRecord, MemoryEditAction, MemoryOperation
 from memory.store import estimate_token_count
+from utils.json_output import StructuredOutputError
 from utils.memory_retrieval import HybridMemoryRetriever
 
 
@@ -80,14 +81,17 @@ class MemoryBuilderReward:
             )
             for record in protected
         )
-        judged = self.judge.evaluate(
-            action=action,
-            evidence=context.observation.new_evidence,
-            neighborhood=context.observation.memory_neighborhood,
-            oracle=context.oracle,
-            after_answer=after_answer,
-            protected_answers=protected_answers,
-        )
+        try:
+            judged = self.judge.evaluate(
+                action=action,
+                evidence=context.observation.new_evidence,
+                neighborhood=context.observation.memory_neighborhood,
+                oracle=context.oracle,
+                after_answer=after_answer,
+                protected_answers=protected_answers,
+            )
+        except StructuredOutputError:
+            return self._neutral()
 
         if judged.groundedness < self.config.grounding_threshold:
             return {
@@ -115,6 +119,7 @@ class MemoryBuilderReward:
             "memory_quality": judged.memory_quality,
             "retention": retention,
             "memory_cost": cost,
+            "reward_available": 1.0,
         }
 
     @staticmethod
@@ -197,4 +202,20 @@ class MemoryBuilderReward:
             "memory_quality": 0.0,
             "retention": 0.0,
             "memory_cost": 0.0,
+            "reward_available": 1.0,
+        }
+
+    @staticmethod
+    def _neutral() -> dict[str, float]:
+        return {
+            "score": 0.0,
+            "action_valid": 1.0,
+            "after_correctness": 0.0,
+            "gain": 0.0,
+            "groundedness": 0.0,
+            "action_quality": 0.0,
+            "memory_quality": 0.0,
+            "retention": 0.0,
+            "memory_cost": 0.0,
+            "reward_available": 0.0,
         }

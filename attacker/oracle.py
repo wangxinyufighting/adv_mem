@@ -5,6 +5,7 @@ from typing import Any
 from openai import OpenAI
 
 from attacker.models import GraphRouteBundle, OracleResult, SupportingEvidence
+from utils.json_output import retry_json_object
 
 
 SYSTEM_PROMPT = """You are an evidence-grounded Oracle.
@@ -50,11 +51,11 @@ class DeepSeekOracle:
         api_key: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
-        max_tokens: int = 1200,
+        max_tokens: int | None = None,
         client: Any | None = None,
     ):
         self.model = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-        self.max_tokens = max_tokens
+        self.max_tokens = max_tokens or int(os.getenv("ORACLE_MAX_TOKENS", "2048"))
         self.client = client or OpenAI(
             api_key=api_key or os.environ["DEEPSEEK_API_KEY"],
             base_url=base_url
@@ -62,18 +63,30 @@ class DeepSeekOracle:
         )
 
     def evaluate(self, question: str, route: GraphRouteBundle) -> OracleResult:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": self._user_prompt(question, route)},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0,
-            max_tokens=self.max_tokens,
+        def request():
+            return self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": self._user_prompt(question, route)},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+                max_tokens=self.max_tokens,
+            )
+
+        required = (
+            "valid",
+            "answer",
+            "supporting_evidence",
+            "invalid_reason",
+            "confidence",
         )
-        content = response.choices[0].message.content or ""
-        return self._parse_result(question, route, json.loads(content))
+        return retry_json_object(
+            request,
+            required,
+            lambda payload: self._parse_result(question, route, payload),
+        )
 
     @staticmethod
     def _user_prompt(question: str, route: GraphRouteBundle) -> str:

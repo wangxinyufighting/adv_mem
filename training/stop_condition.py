@@ -6,6 +6,7 @@ from defender.memory_builder import MemoryBuilder
 from memory.models import MemoryOperation, MemoryState
 from memory.store import MemoryStore
 from training.alternating import QuestionCandidate
+from utils.json_output import StructuredOutputError
 
 
 @dataclass(frozen=True)
@@ -95,12 +96,15 @@ class CompactionAuditor:
             if temp.active_token_count >= memory.active_token_count:
                 continue
             protected = self._protected_questions(memory, action.target_node_ids)
-            if self._no_regression(memory, temp, protected):
-                return CompactionAudit(
-                    self._refresh_links(temp, protected),
-                    compressed=True,
-                    attempts=attempts,
-                )
+            try:
+                if self._no_regression(memory, temp, protected):
+                    return CompactionAudit(
+                        self._refresh_links(temp, protected),
+                        compressed=True,
+                        attempts=attempts,
+                    )
+            except StructuredOutputError:
+                continue
         return CompactionAudit(memory, compressed=False, attempts=attempts)
 
     def _neighborhoods(self, memory: MemoryState) -> tuple[tuple, ...]:

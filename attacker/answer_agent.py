@@ -19,7 +19,7 @@ class QwenAnswerAgent:
         self,
         client: Any,
         model: str = "Qwen/Qwen3-0.6B",
-        max_tokens: int = 256,
+        max_tokens: int = 512,
     ):
         self.client = client
         self.model = model
@@ -36,6 +36,7 @@ class QwenAnswerAgent:
                 ),
             ),
             model=os.getenv("ANSWER_AGENT_MODEL", "Qwen/Qwen3-0.6B"),
+            max_tokens=int(os.getenv("ANSWER_AGENT_MAX_TOKENS", "512")),
         )
 
     def answer_sources(
