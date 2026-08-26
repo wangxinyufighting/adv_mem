@@ -79,10 +79,17 @@ class LLMQueryParser:
 class OpenAIEmbedder:
     """Batch embeddings through an OpenAI-compatible endpoint."""
 
-    def __init__(self, client: OpenAI, model: str, dimensions: int | None = None):
+    def __init__(
+        self,
+        client: OpenAI,
+        model: str,
+        dimensions: int | None = None,
+        batch_size: int = 10,
+    ):
         self.client = client
         self.model = model
         self.dimensions = dimensions
+        self.batch_size = batch_size
 
     @classmethod
     def from_env(cls) -> "OpenAIEmbedder":
@@ -93,15 +100,19 @@ class OpenAIEmbedder:
             ),
             model=os.getenv("MOS_EMBEDDER_MODEL", "text-embedding-v4"),
             dimensions=int(os.getenv("EMBEDDING_DIMENSION", "1024")),
+            batch_size=int(os.getenv("EMBEDDING_BATCH_SIZE", "10")),
         )
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        response = self.client.embeddings.create(
-            model=self.model,
-            input=texts,
-            dimensions=self.dimensions,
-        )
-        return [item.embedding for item in response.data]
+        vectors = []
+        for start in range(0, len(texts), self.batch_size):
+            response = self.client.embeddings.create(
+                model=self.model,
+                input=texts[start : start + self.batch_size],
+                dimensions=self.dimensions,
+            )
+            vectors.extend(item.embedding for item in response.data)
+        return vectors
 
 
 class BGEReranker:

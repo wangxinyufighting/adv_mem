@@ -3,6 +3,9 @@
 AdvMem 通过交替 GRPO 训练 Attacker 和 Memory Builder。Attacker 寻找当前记忆
 `M_t` 缺失的能力，Memory Builder 通过编辑记忆修复这些能力。
 
+完整的代码文件职责、组件接口和全部 Prompt 位置见
+[`CODE_GUIDE.md`](CODE_GUIDE.md)。
+
 ## 训练流程
 
 ```text
@@ -72,6 +75,7 @@ export MOS_EMBEDDER_API_KEY=xxxx
 export MOS_EMBEDDER_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 export MOS_EMBEDDER_MODEL=text-embedding-v4
 export EMBEDDING_DIMENSION=1024
+export EMBEDDING_BATCH_SIZE=10
 
 export BGE_RERANKER_URL=http://localhost:8000/v1/rerank
 export BGE_RERANKER_MODEL=bge-reranker-v2-m3
