@@ -55,6 +55,8 @@ class VLLMPolicyServer(AbstractContextManager[ChatPolicy]):
             self.model_path,
             "--served-model-name",
             "policy",
+            "--dtype",
+            "bfloat16",
             "--port",
             str(self.port),
             "--gpu-memory-utilization",
