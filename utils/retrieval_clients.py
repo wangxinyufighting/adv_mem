@@ -16,6 +16,7 @@ Return JSON only with this schema:
   "keywords": ["important entities, dates, and exact terms"],
   "tags": ["broad topic tags"]
 }
+All four fields are required.
 Do not answer the question. Preserve all constraints and temporal references.
 """
 
@@ -54,10 +55,18 @@ class LLMQueryParser:
             response_format={"type": "json_object"},
             temperature=0,
         )
-        payload = json.loads(response.choices[0].message.content)
-        rewritten = payload["rewritten_query"].strip()
+        content = response.choices[0].message.content
+        try:
+            payload = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+
+        # Query parsing improves recall, but malformed LLM output must not stop training.
+        rewritten = (payload.get("rewritten_query") or query).strip()
         retrieval_queries = tuple(
-            item.strip() for item in payload["retrieval_queries"] if item.strip()
+            item.strip()
+            for item in payload.get("retrieval_queries", [rewritten])
+            if item.strip()
         )
         plan = QueryPlan(
             rewritten_query=rewritten,
