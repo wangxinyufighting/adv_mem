@@ -34,14 +34,11 @@ class LLMQueryParser:
             client=OpenAI(
                 api_key=os.getenv("RETRIEVAL_LLM_API_KEY")
                 or os.environ["DEEPSEEK_API_KEY"],
-                base_url=os.getenv(
-                    "RETRIEVAL_LLM_BASE_URL", "https://api.deepseek.com"
-                ),
+                base_url=os.getenv("RETRIEVAL_LLM_BASE_URL")
+                or os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com"),
             ),
-            model=os.getenv(
-                "RETRIEVAL_LLM_MODEL",
-                os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-            ),
+            model=os.getenv("RETRIEVAL_LLM_MODEL")
+            or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
         )
 
     def parse(self, query: str) -> QueryPlan:
