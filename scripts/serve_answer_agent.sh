@@ -12,4 +12,6 @@ cd "${VERL_HOME}"
 exec "${PYTHON_BIN}" -m vllm.entrypoints.openai.api_server \
     --model "${MODEL_PATH}" \
     --served-model-name "${MODEL_PATH}" \
+    --dtype bfloat16 \
+    --gpu-memory-utilization "${ANSWER_AGENT_GPU_MEMORY_UTILIZATION:-0.6}" \
     --port "${PORT}"
