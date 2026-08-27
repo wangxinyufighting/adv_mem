@@ -311,7 +311,10 @@ class AlternatingTrainer:
                     self.flow.discard(refreshed)
                     discarded += 1
                     continue
-                action = self.builder.parse_action(response)
+                action = self.builder.parse_action(
+                    response,
+                    refreshed.observation.memory_neighborhood,
+                )
                 if self.flow.commit(refreshed, action, reward):
                     committed += 1
                 else:

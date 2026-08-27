@@ -113,7 +113,10 @@ class MemoryStore:
                     *(node.linked_questions for node in targets),
                     (question_id,) if question_id else (),
                 ),
-                tags=draft.tags,
+                tags=_unique(
+                    draft.tags,
+                    *(node.tags for node in targets),
+                ),
                 time_span=time_span,
                 token_count=estimate_token_count(draft.content),
                 created_version=version,

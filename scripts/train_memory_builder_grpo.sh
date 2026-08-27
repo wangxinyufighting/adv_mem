@@ -26,7 +26,7 @@ cd "${VERL_HOME}"
     data.val_files="${VAL_FILE}" \
     data.train_batch_size="${TRAIN_BATCH_SIZE}" \
     data.max_prompt_length=4096 \
-    data.max_response_length=4096 \
+    data.max_response_length=1024 \
     data.filter_overlong_prompts=True \
     data.truncation=error \
     actor_rollout_ref.model.path="${MODEL_PATH}" \
@@ -48,9 +48,8 @@ cd "${VERL_HOME}"
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE}" \
     +actor_rollout_ref.ref.fsdp_config.model_dtype=bf16 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
-    reward_model.reward_manager=batch \
     custom_reward_function.path="${ROOT}/defender/verl_reward.py" \
-    custom_reward_function.name=compute_scores \
+    custom_reward_function.name=compute_score \
     trainer.critic_warmup=0 \
     trainer.logger='["console"]' \
     trainer.project_name=adv_mem \

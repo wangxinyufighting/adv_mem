@@ -122,7 +122,6 @@ bash train.sh --rounds 20
 - 每个 case 采样 16 条 Route
 - 每轮为每个 case 处理 8 个 Question
 - Attacker 和 Memory Builder 各训练 1 epoch
-- Reward 最多并发计算 4 个 rollout，可用 `REWARD_MAX_WORKERS` 调整
 
 常用参数：
 

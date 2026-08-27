@@ -337,7 +337,10 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                             case_round.flow.discard(current)
                             case_round.discarded += 1
                             continue
-                        action = builder.parse_action(response)
+                        action = builder.parse_action(
+                            response,
+                            current.observation.memory_neighborhood,
+                        )
                         if case_round.flow.commit(current, action, reward):
                             case_round.committed += 1
                         else:

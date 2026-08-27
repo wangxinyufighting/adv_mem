@@ -37,13 +37,13 @@ class MemoryBuilderObservation:
             ],
             "memory_neighborhood": [
                 {
-                    "memory_node_id": node.id,
+                    "index": index,
                     "content": node.content,
                     "linked_questions": list(node.linked_questions),
                     "tags": list(node.tags),
                     "time_span": node.time_span,
                 }
-                for node in self.memory_neighborhood
+                for index, node in enumerate(self.memory_neighborhood)
             ],
         }
 

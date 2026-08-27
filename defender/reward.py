@@ -53,7 +53,10 @@ class MemoryBuilderReward:
         context: MemoryBuilderRewardContext,
     ) -> dict[str, float]:
         try:
-            action = self.builder.parse_action(response)
+            action = self.builder.parse_action(
+                response,
+                context.observation.memory_neighborhood,
+            )
         except (json.JSONDecodeError, KeyError, TypeError, AttributeError, ValueError):
             return self._invalid()
         if not self._valid_action(action, context):

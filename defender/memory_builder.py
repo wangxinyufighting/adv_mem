@@ -6,6 +6,7 @@ from defender.models import MemoryBuilderObservation, MemoryBuilderRewardContext
 from memory.models import (
     MemoryDraft,
     MemoryEditAction,
+    MemoryNode,
     MemoryOperation,
     MemoryState,
 )
@@ -22,22 +23,28 @@ DELETE: archive nearby memories that are wrong, obsolete, or no longer useful.
 NOOP: make no change when the evidence adds no useful memory.
 
 Write at most two concise sentences of durable factual memory, not a transcript or
-question-answer pair. MERGE may target one node when revising it. Evidence has no
-editable IDs. Targets may contain only memory_node_id values from memory_neighborhood.
-When memory_neighborhood is empty, only ADD or NOOP is valid and targets must be empty.
+question-answer pair. Each nearby memory has an integer index. Targets may contain
+only unique indices from memory_neighborhood. MERGE may target one memory when
+revising it. When memory_neighborhood is empty, only ADD or NOOP is valid.
 
-Return JSON only:
-{"operation":"add|merge|delete|noop","target_node_ids":[],"new_memory":{"content":"...","tags":["..."]}|null}
-new_memory is required for ADD and MERGE and must be null for DELETE and NOOP."""
+Return JSON only with exactly these three fields:
+{"operation":"add","targets":[],"content":"..."}
+operation must be add, merge, delete, or noop.
+ADD: empty targets and non-empty content.
+MERGE: non-empty targets and non-empty content.
+DELETE: non-empty targets and empty content.
+NOOP: empty targets and empty content."""
 
 COMPACTION_PROMPT = """Compress a long-term memory without losing information.
 Use MERGE to replace at least two memories with one shorter complete memory. Use
 DELETE only when a memory is redundant. Otherwise use NOOP. Preserve every fact
-needed by linked_questions and target only IDs from memory_neighborhood.
+needed by linked_questions and target only unique neighborhood indices.
 
-Return JSON only:
-{"operation":"merge|delete|noop","target_node_ids":[],"new_memory":{"content":"...","tags":["..."]}|null}
-"""
+Return JSON only with exactly these three fields:
+{"operation":"noop","targets":[],"content":""}
+operation must be merge, delete, or noop.
+MERGE requires at least two targets and non-empty content. DELETE requires non-empty
+targets and empty content. NOOP requires empty targets and empty content."""
 
 
 class MemoryBuilder:
@@ -68,7 +75,14 @@ class MemoryBuilder:
                 "content": json.dumps(
                     {
                         "memory_neighborhood": [
-                            node.to_dict() for node in neighborhood
+                            {
+                                "index": index,
+                                "content": node.content,
+                                "linked_questions": list(node.linked_questions),
+                                "tags": list(node.tags),
+                                "time_span": node.time_span,
+                            }
+                            for index, node in enumerate(neighborhood)
                         ]
                     },
                     ensure_ascii=False,
@@ -77,24 +91,50 @@ class MemoryBuilder:
             },
         ]
 
-    def parse_action(self, response: str) -> MemoryEditAction:
+    def parse_action(
+        self,
+        response: str,
+        neighborhood: tuple[MemoryNode, ...],
+    ) -> MemoryEditAction:
         payload = parse_json_object(
             response,
-            ("operation", "target_node_ids", "new_memory"),
+            ("operation", "targets", "content"),
         )
-        new_memory = payload["new_memory"]
-        draft = (
-            MemoryDraft(
-                content=new_memory["content"],
-                tags=tuple(new_memory["tags"]),
+        if set(payload) != {"operation", "targets", "content"}:
+            raise ValueError(
+                "Action must contain exactly operation, targets, and content"
             )
-            if new_memory is not None
-            else None
-        )
+        if not isinstance(payload["operation"], str):
+            raise ValueError("operation must be a string")
+        if not isinstance(payload["targets"], list) or any(
+            type(index) is not int for index in payload["targets"]
+        ):
+            raise ValueError("targets must be a list of integer indices")
+        if not isinstance(payload["content"], str):
+            raise ValueError("content must be a string")
+
+        operation = MemoryOperation(payload["operation"])
+        indices = payload["targets"]
+        content = payload["content"]
+        if len(indices) != len(set(indices)):
+            raise ValueError("targets must be unique")
+        if any(index < 0 or index >= len(neighborhood) for index in indices):
+            raise ValueError("target index is outside memory_neighborhood")
+
+        has_content = bool(content.strip())
+        valid_shape = {
+            MemoryOperation.ADD: not indices and has_content,
+            MemoryOperation.MERGE: bool(indices) and has_content,
+            MemoryOperation.DELETE: bool(indices) and content == "",
+            MemoryOperation.NOOP: not indices and content == "",
+        }
+        if not valid_shape[operation]:
+            raise ValueError(f"Invalid fields for {operation.value}")
+
         return MemoryEditAction(
-            operation=MemoryOperation(payload["operation"]),
-            target_node_ids=tuple(payload["target_node_ids"]),
-            new_memory=draft,
+            operation=operation,
+            target_node_ids=tuple(neighborhood[index].id for index in indices),
+            new_memory=MemoryDraft(content.strip()) if has_content else None,
         )
 
     def execute(

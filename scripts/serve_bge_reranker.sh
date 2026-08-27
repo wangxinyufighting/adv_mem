@@ -14,6 +14,5 @@ exec "${PYTHON_BIN}" -m vllm.entrypoints.openai.api_server \
     --model "${MODEL_PATH}" \
     --served-model-name "${MODEL_NAME}" \
     --task score \
-    --dtype bfloat16 \
     --gpu-memory-utilization "${RERANKER_GPU_MEMORY_UTILIZATION:-0.3}" \
     --port "${PORT}"

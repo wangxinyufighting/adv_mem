@@ -86,7 +86,7 @@ class CompactionAuditor:
                 512,
             )
             try:
-                action = self.builder.parse_action(response)
+                action = self.builder.parse_action(response, neighborhood)
                 if not self._valid(action, neighborhood):
                     continue
                 temp = self.builder.compact(memory, action)
