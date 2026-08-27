@@ -18,6 +18,7 @@ class MemoryBuilderRewardConfig:
     retrieval_top_k: int = 5
     max_protected_questions: int = 3
     memory_cost_weight: float = 0.05
+    max_memory_tokens: int = 128
 
 
 class MemoryBuilderReward:
@@ -53,15 +54,15 @@ class MemoryBuilderReward:
     ) -> dict[str, float]:
         try:
             action = self.builder.parse_action(response)
-            if not self._valid_action(action, context):
-                return self._invalid()
-            temp = self.builder.execute(
-                context.memory,
-                context.observation,
-                action,
-            )
         except (json.JSONDecodeError, KeyError, TypeError, AttributeError, ValueError):
             return self._invalid()
+        if not self._valid_action(action, context):
+            return self._invalid(-0.7)
+        temp = self.builder.execute(
+            context.memory,
+            context.observation,
+            action,
+        )
 
         after_results = self.retriever.retrieve(
             context.observation.question,
@@ -122,8 +123,8 @@ class MemoryBuilderReward:
             "reward_available": 1.0,
         }
 
-    @staticmethod
     def _valid_action(
+        self,
         action: MemoryEditAction,
         context: MemoryBuilderRewardContext,
     ) -> bool:
@@ -132,9 +133,12 @@ class MemoryBuilderReward:
         if not targets <= neighborhood_ids:
             return False
 
-        has_memory = action.new_memory is not None and bool(
+        memory_tokens = (
             estimate_token_count(action.new_memory.content)
+            if action.new_memory
+            else 0
         )
+        has_memory = 0 < memory_tokens <= self.config.max_memory_tokens
         if action.operation == MemoryOperation.ADD:
             return not targets and has_memory
         if action.operation == MemoryOperation.MERGE:
@@ -191,9 +195,9 @@ class MemoryBuilderReward:
         return min(1.0, growth / max(1, evidence_tokens))
 
     @staticmethod
-    def _invalid() -> dict[str, float]:
+    def _invalid(score: float = -1.0) -> dict[str, float]:
         return {
-            "score": -1.0,
+            "score": score,
             "action_valid": 0.0,
             "after_correctness": 0.0,
             "gain": 0.0,

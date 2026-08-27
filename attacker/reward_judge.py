@@ -9,13 +9,13 @@ from attacker.models import OracleResult
 from utils.json_output import retry_json_object
 
 
-SYSTEM_PROMPT = """Evaluate a memory question and two candidate answers.
+SYSTEM_PROMPT = """Evaluate a memory question and candidate answers.
 
-Score gold_correctness and memory_correctness from 0 to 1 against the canonical
-answer. Score value from 0 to 1 based on whether the question captures useful,
-substantive, natural, user-relevant information rather than artificial trivia.
-Judge the three scores independently. Return JSON only:
-{"gold_correctness":0.0,"memory_correctness":0.0,"value":0.0}"""
+Score each supplied answer's correctness from 0 to 1 against the canonical answer.
+Score value from 0 to 1 based on whether the question captures useful, substantive,
+natural, user-relevant information rather than artificial trivia. Judge all scores
+independently. Return JSON only:
+{"gold_correctness":0.0,"memory_correctness":0.0,"parametric_correctness":0.0,"value":0.0}"""
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,7 @@ class RewardJudgeResult:
     gold_correctness: float
     memory_correctness: float
     value: float
+    parametric_correctness: float = 0.0
 
 
 class DeepSeekRewardJudge:
@@ -52,6 +53,7 @@ class DeepSeekRewardJudge:
         oracle: OracleResult,
         golden_answer: str,
         memory_answer: str,
+        parametric_answer: str | None = None,
     ) -> RewardJudgeResult:
         payload = {
             "question": oracle.question,
@@ -67,6 +69,8 @@ class DeepSeekRewardJudge:
             "golden_answer": golden_answer,
             "memory_answer": memory_answer,
         }
+        if parametric_answer is not None:
+            payload["parametric_answer"] = parametric_answer
 
         def request():
             return self.client.chat.completions.create(
@@ -83,12 +87,18 @@ class DeepSeekRewardJudge:
                 max_tokens=self.max_tokens,
             )
 
+        required = ["gold_correctness", "memory_correctness", "value"]
+        if parametric_answer is not None:
+            required.append("parametric_correctness")
         return retry_json_object(
             request,
-            ("gold_correctness", "memory_correctness", "value"),
+            required,
             lambda result: RewardJudgeResult(
                 gold_correctness=float(result["gold_correctness"]),
                 memory_correctness=float(result["memory_correctness"]),
                 value=float(result["value"]),
+                parametric_correctness=float(
+                    result.get("parametric_correctness", 0.0)
+                ),
             ),
         )

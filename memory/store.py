@@ -142,6 +142,8 @@ class MemoryStore:
         node_ids: tuple[str, ...],
         evidence: tuple[MemoryEvidence, ...] = (),
     ) -> None:
+        if not node_ids:
+            raise ValueError("A defense success must be supported by memory")
         stored = replace(
             record,
             supporting_memory_node_ids=node_ids,

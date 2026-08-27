@@ -91,20 +91,22 @@ class MemoryTrainingFlow:
             top_k=self.top_k,
         )
         memories = tuple(result.node for result in results)
-        memory_answer = self.answer_agent.answer_memories(
-            candidate.oracle.question,
-            memories,
-        )
-        judged = self.answer_judge.evaluate(
-            candidate.oracle,
-            candidate.golden_answer,
-            memory_answer,
-        )
+        correctness = 0.0
+        if memories:
+            memory_answer = self.answer_agent.answer_memories(
+                candidate.oracle.question,
+                memories,
+            )
+            correctness = self.answer_judge.evaluate(
+                candidate.oracle,
+                candidate.golden_answer,
+                memory_answer,
+            ).memory_correctness
         capability = self._capability(candidate)
         evidence = self._evidence(candidate)
 
         # Correct answers are defense successes; no memory reconstruction is needed.
-        if judged.memory_correctness >= self.defense_threshold:
+        if correctness >= self.defense_threshold:
             self.store.mark_success(
                 capability,
                 tuple(node.id for node in memories),
@@ -123,7 +125,7 @@ class MemoryTrainingFlow:
             candidate=candidate,
             capability=capability,
             observation=observation,
-            before_correctness=judged.memory_correctness,
+            before_correctness=correctness,
         )
 
     def try_process_question(
@@ -168,6 +170,9 @@ class MemoryTrainingFlow:
             temp,
             top_k=self.top_k,
         )
+        if not results:
+            self.store.mark_high_priority(pending.capability, evidence)
+            return False
         committed = MemoryStore(temp)
         committed.mark_success(
             pending.capability,

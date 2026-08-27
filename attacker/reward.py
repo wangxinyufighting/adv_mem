@@ -26,6 +26,7 @@ from utils.memory_retrieval import HybridMemoryRetriever
 @dataclass(frozen=True)
 class AttackerRewardConfig:
     gold_threshold: float = 0.8
+    parametric_threshold: float = 0.8
     memory_top_k: int = 5
     novelty_low: float = 0.75
     novelty_high: float = 0.92
@@ -97,9 +98,20 @@ class AttackerReward:
         format_valid = 1.0 if is_clean_json_object(response) else 0.5
         if not question.endswith(("?", "\uff1f")):
             return self._finish(
-                self._invalid(format_valid=format_valid),
+                self._invalid(format_valid=format_valid, score=-0.9),
                 trace,
                 stage="question_invalid",
+            )
+
+        normalized = " ".join(question.casefold().split())
+        if normalized in {
+            " ".join(item.question.casefold().split())
+            for item in context.prior_questions
+        }:
+            return self._finish(
+                self._invalid(format_valid=format_valid),
+                trace,
+                stage="duplicate",
             )
 
         try:
@@ -112,11 +124,16 @@ class AttackerReward:
                 error=str(error),
             )
         if not oracle.valid:
+            relevance = self._route_relevance(question, context.route)
             return self._finish(
-                self._invalid(format_valid=format_valid),
+                self._invalid(
+                    format_valid=format_valid,
+                    score=-0.8 + 0.4 * relevance,
+                ),
                 trace,
                 stage="oracle_invalid",
                 oracle_invalid_reason=oracle.invalid_reason,
+                route_relevance=relevance,
             )
 
         # Golden corpus is copied verbatim from the Full Memory Graph.
@@ -124,6 +141,7 @@ class AttackerReward:
             question,
             context.route.source_records,
         )
+        parametric_answer = self.answer_agent.answer_question(question)
         # The same frozen agent now answers from fixed retrieval over M_t.
         memory_results = self.retriever.retrieve(
             question,
@@ -135,7 +153,12 @@ class AttackerReward:
             tuple(result.node for result in memory_results),
         )
         try:
-            judged = self.judge.evaluate(oracle, golden_answer, memory_answer)
+            judged = self.judge.evaluate(
+                oracle,
+                golden_answer,
+                memory_answer,
+                parametric_answer,
+            )
         except StructuredOutputError as error:
             return self._finish(
                 self._neutral(format_valid, oracle_valid=1.0),
@@ -150,6 +173,7 @@ class AttackerReward:
                     item.source_id for item in oracle.supporting_evidence
                 ],
                 "golden_answer": golden_answer,
+                "parametric_answer": parametric_answer,
                 "memory_answer": memory_answer,
             }
         )
@@ -161,6 +185,18 @@ class AttackerReward:
                 "gold_correctness": judged.gold_correctness,
             }
             return self._finish(result, trace, stage="gold_invalid")
+
+        if judged.parametric_correctness >= self.config.parametric_threshold:
+            result = {
+                **self._invalid(
+                    format_valid=format_valid,
+                    oracle_valid=1.0,
+                    score=-judged.parametric_correctness,
+                ),
+                "gold_correctness": judged.gold_correctness,
+                "parametric_correctness": judged.parametric_correctness,
+            }
+            return self._finish(result, trace, stage="parametric_answerable")
 
         uncovered = max(
             0.0,
@@ -176,6 +212,7 @@ class AttackerReward:
             "oracle_valid": 1.0,
             "gold_correctness": judged.gold_correctness,
             "memory_correctness": judged.memory_correctness,
+            "parametric_correctness": judged.parametric_correctness,
             "value": judged.value,
             "uncovered": uncovered,
             "novelty": novelty,
@@ -229,6 +266,13 @@ class AttackerReward:
         required = 1 if route.attack_mode == AttackMode.SINGLE_FACT else 2
         return min(1.0, len(used & intended) / required)
 
+    def _route_relevance(self, question: str, route: GraphRouteBundle) -> float:
+        vectors = self.embedder.embed(
+            [question, *(node.memory for node in route.evidence_nodes)]
+        )
+        similarity = max(self._cosine(vectors[0], vector) for vector in vectors[1:])
+        return max(0.0, min(1.0, similarity))
+
     @staticmethod
     def _cosine(left: list[float], right: list[float]) -> float:
         return sum(a * b for a, b in zip(left, right, strict=True)) / (
@@ -240,13 +284,15 @@ class AttackerReward:
     def _invalid(
         format_valid: float,
         oracle_valid: float = 0.0,
+        score: float = -1.0,
     ) -> dict[str, float]:
         return {
-            "score": -1.0,
+            "score": score,
             "format_valid": format_valid,
             "oracle_valid": oracle_valid,
             "gold_correctness": 0.0,
             "memory_correctness": 0.0,
+            "parametric_correctness": 0.0,
             "value": 0.0,
             "uncovered": 0.0,
             "novelty": 0.0,
@@ -265,6 +311,7 @@ class AttackerReward:
             "oracle_valid": oracle_valid,
             "gold_correctness": 0.0,
             "memory_correctness": 0.0,
+            "parametric_correctness": 0.0,
             "value": 0.0,
             "uncovered": 0.0,
             "novelty": 0.0,

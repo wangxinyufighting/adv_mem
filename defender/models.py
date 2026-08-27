@@ -24,6 +24,29 @@ class MemoryBuilderObservation:
             ],
         }
 
+    def to_prompt_dict(self) -> dict[str, Any]:
+        return {
+            "question": self.question,
+            "new_evidence": [
+                {
+                    "text": item.quote,
+                    "time": item.chat_time,
+                    "role": item.role,
+                }
+                for item in self.new_evidence
+            ],
+            "memory_neighborhood": [
+                {
+                    "memory_node_id": node.id,
+                    "content": node.content,
+                    "linked_questions": list(node.linked_questions),
+                    "tags": list(node.tags),
+                    "time_span": node.time_span,
+                }
+                for node in self.memory_neighborhood
+            ],
+        }
+
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "MemoryBuilderObservation":
         return cls(

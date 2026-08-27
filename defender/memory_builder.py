@@ -21,8 +21,10 @@ MERGE: replace one or more nearby memories with a single better memory.
 DELETE: archive nearby memories that are wrong, obsolete, or no longer useful.
 NOOP: make no change when the evidence adds no useful memory.
 
-Write durable factual memory, not a question-answer pair. MERGE may target one node when
-revising it. Target only node IDs from memory_neighborhood.
+Write at most two concise sentences of durable factual memory, not a transcript or
+question-answer pair. MERGE may target one node when revising it. Evidence has no
+editable IDs. Targets may contain only memory_node_id values from memory_neighborhood.
+When memory_neighborhood is empty, only ADD or NOOP is valid and targets must be empty.
 
 Return JSON only:
 {"operation":"add|merge|delete|noop","target_node_ids":[],"new_memory":{"content":"...","tags":["..."]}|null}
@@ -49,7 +51,7 @@ class MemoryBuilder:
             {
                 "role": "user",
                 "content": (
-                    json.dumps(observation.to_dict(), ensure_ascii=False)
+                    json.dumps(observation.to_prompt_dict(), ensure_ascii=False)
                     + "\n\n/no_think"
                 ),
             },

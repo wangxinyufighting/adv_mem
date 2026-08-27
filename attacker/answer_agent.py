@@ -55,21 +55,32 @@ class QwenAnswerAgent:
         question: str,
         memories: tuple[MemoryNode, ...],
     ) -> str:
+        if not memories:
+            return "INSUFFICIENT_INFORMATION"
         context = "\n\n".join(
             f"[{item.id}] time={item.time_span}\n{item.content}" for item in memories
         )
         return self._answer(question, context)
 
+    def answer_question(self, question: str) -> str:
+        """Answer without context to expose parametric knowledge."""
+        return self._complete([{"role": "user", "content": question}])
+
     def _answer(self, question: str, context: str) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
+        return self._complete(
+            [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": f"Context:\n{context}\n\nQuestion:\n{question}",
                 },
-            ],
+            ]
+        )
+
+    def _complete(self, messages: list[dict[str, str]]) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
             temperature=0,
             max_tokens=self.max_tokens,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},

@@ -70,8 +70,22 @@ class DeepSeekMemoryJudge:
                 "target_node_ids": list(action.target_node_ids),
                 "new_memory": asdict(action.new_memory) if action.new_memory else None,
             },
-            "new_evidence": [asdict(item) for item in evidence],
-            "memory_neighborhood": [node.to_dict() for node in neighborhood],
+            "new_evidence": [
+                {
+                    "quote": item.quote,
+                    "chat_time": item.chat_time,
+                    "role": item.role,
+                }
+                for item in evidence
+            ],
+            "memory_neighborhood": [
+                {
+                    "id": node.id,
+                    "content": node.content,
+                    "linked_questions": list(node.linked_questions),
+                }
+                for node in neighborhood
+            ],
             "question": oracle.question,
             "canonical_answer": oracle.answer,
             "after_answer": after_answer,

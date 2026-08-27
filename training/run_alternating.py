@@ -66,7 +66,7 @@ class CaseRound:
 
 
 class QuestionCollector:
-    """Use the trained Attacker, then apply Oracle and golden-corpus validation."""
+    """Apply Oracle, golden-corpus, and parametric-knowledge filters."""
 
     def __init__(
         self,
@@ -75,12 +75,14 @@ class QuestionCollector:
         answer_agent: QwenAnswerAgent,
         judge: DeepSeekRewardJudge,
         value_threshold: float = 0.5,
+        parametric_threshold: float = 0.8,
     ):
         self.attacker = attacker
         self.oracle = oracle
         self.answer_agent = answer_agent
         self.judge = judge
         self.value_threshold = value_threshold
+        self.parametric_threshold = parametric_threshold
 
     def collect(
         self,
@@ -101,7 +103,8 @@ class QuestionCollector:
                 question = self.attacker.parse_question(response)
             except (ValueError, KeyError, TypeError):
                 continue
-            if not question or question in prior_questions:
+            normalized = self.attacker.normalize_question(question)
+            if not question or normalized in prior_questions:
                 continue
 
             try:
@@ -112,16 +115,19 @@ class QuestionCollector:
                     question,
                     route.source_records,
                 )
+                parametric_answer = self.answer_agent.answer_question(question)
                 judged = self.judge.evaluate(
                     oracle,
                     golden_answer,
                     "INSUFFICIENT_INFORMATION",
+                    parametric_answer,
                 )
             except StructuredOutputError:
                 continue
             if (
                 judged.gold_correctness < 0.8
                 or judged.value < self.value_threshold
+                or judged.parametric_correctness >= self.parametric_threshold
             ):
                 continue
 
@@ -131,7 +137,7 @@ class QuestionCollector:
             candidates.append(
                 QuestionCandidate(question_id, route, oracle, golden_answer)
             )
-            prior_questions.add(question)
+            prior_questions.add(normalized)
             if len(candidates) == count:
                 break
         return tuple(candidates)
@@ -230,7 +236,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                     retriever,
                     fresh_count,
                     {
-                        item.oracle.question
+                        attacker.normalize_question(item.oracle.question)
                         for item in case_state.questions.values()
                     },
                 )

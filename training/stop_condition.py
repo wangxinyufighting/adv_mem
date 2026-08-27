@@ -176,6 +176,8 @@ class CompactionAuditor:
             memory,
             top_k=5,
         )
+        if not results:
+            return 0.0, ()
         answer = self.answer_agent.answer_memories(
             candidate.oracle.question,
             tuple(result.node for result in results),

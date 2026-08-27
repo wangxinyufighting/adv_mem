@@ -241,7 +241,6 @@ class OracleResult:
 class AttackerObservation:
     route: GraphRouteBundle
     memory_neighborhood: tuple[MemoryNode, ...]
-    prior_questions: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -255,7 +254,6 @@ class AttackerObservation:
                 }
                 for node in self.memory_neighborhood
             ],
-            "prior_questions": list(self.prior_questions),
         }
 
 

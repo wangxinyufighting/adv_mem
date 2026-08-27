@@ -7,7 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from attacker.attacker import Attacker
-from attacker.graph_router import GraphRouterPolicy
+from attacker.graph_router import GraphRouterPolicy, NoRouteFoundError
 from attacker.models import AttackMode, MemoryGraphView, RouterConfig
 from defender.memory_builder import MemoryBuilder
 from memory.models import MemoryState
@@ -66,17 +66,23 @@ class AttackerDatasetBuilder:
         self.seed = seed
 
     def routes(self, case_index: int, count: int) -> tuple:
-        config = RouterConfig(random_seed=self.seed)
+        config = RouterConfig(random_seed=self.seed, fallback_to_single_fact=False)
         router = GraphRouterPolicy(config)
-        modes = tuple(AttackMode)
         graph = MemoryGraphView.from_case(
             self.reader.get_case(case_index),
             self.reader.version,
         )
-        return tuple(
-            router.route(graph, modes[index % len(modes)])
-            for index in range(count)
-        )
+        routes = []
+        modes = []
+        for mode in AttackMode:
+            try:
+                routes.append(router.route(graph, mode))
+                modes.append(mode)
+            except NoRouteFoundError:
+                pass
+        while len(routes) < count:
+            routes.append(router.route(graph, modes[len(routes) % len(modes)]))
+        return tuple(routes[:count])
 
     def records(
         self,

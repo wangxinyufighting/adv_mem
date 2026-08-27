@@ -39,6 +39,7 @@ export VERL_HOME=${VERL_HOME:-${ROOT}/.verl-cu124-src}
 if [[ ! -x "${CUDA124_ENV_DIR}/bin/python" ]]; then
     bash "${ROOT}/scripts/setup_cuda124.sh"
 fi
+bash "${ROOT}/scripts/apply_verl_patch.sh"
 export PYTHON_BIN=${CUDA124_ENV_DIR}/bin/python
 
 if ! "${PYTHON_BIN}" -c 'import pkg_resources' >/dev/null 2>&1; then
