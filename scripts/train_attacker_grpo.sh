@@ -48,8 +48,9 @@ cd "${VERL_HOME}"
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE}" \
     +actor_rollout_ref.ref.fsdp_config.model_dtype=bf16 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    reward_model.reward_manager=batch \
     custom_reward_function.path="${ROOT}/attacker/verl_reward.py" \
-    custom_reward_function.name=compute_score \
+    custom_reward_function.name=compute_scores \
     trainer.critic_warmup=0 \
     trainer.logger='["console"]' \
     trainer.project_name=adv_mem \
