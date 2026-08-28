@@ -15,13 +15,14 @@ Full Memory Graph
   → Verl GRPO 训练 Attacker
   → Attacker 生成 Question
   → Oracle 验证并生成标准答案和 Evidence
-  → Answer Agent 分别使用 Golden Corpus 和 M_t 回答
-  → 回答正确：写入 Success Pool
-  → 回答错误：构建 Memory Builder Parquet
+  → Answer Agent 依次使用 Golden Corpus、无上下文和 M_t 回答
+  → 无上下文已能回答或 Golden Corpus 仍不能回答：丢弃 Question
+  → M_t 回答正确：写入 Success Pool
+  → M_t 回答错误：构建 Memory Builder Parquet
   → Verl GRPO 训练 Memory Builder
   → Memory Builder 生成 ADD / MERGE / DELETE / NOOP
-  → Reward > 0：提交 M_temp 为 M_t+1
-  → Reward <= 0：保留 M_t，写入 High-Priority Buffer
+  → commit_valid=1 且 Reward > commit threshold：提交 M_temp 为 M_t+1
+  → 其他情况：保留 M_t，写入 High-Priority Buffer
   → 连续多轮无有效攻击且无无损压缩：停止
 ```
 

@@ -1,9 +1,12 @@
-import json
 from dataclasses import dataclass
 from typing import Any
 
 from attacker.answer_agent import QwenAnswerAgent
-from defender.memory_builder import MemoryBuilder
+from defender.memory_builder import (
+    ActionConstraintError,
+    ActionSchemaError,
+    MemoryBuilder,
+)
 from defender.models import MemoryBuilderRewardContext
 from defender.reward_judge import DeepSeekMemoryJudge, ProtectedAnswer
 from memory.models import CapabilityRecord, MemoryEditAction, MemoryOperation
@@ -15,10 +18,16 @@ from utils.memory_retrieval import HybridMemoryRetriever
 @dataclass(frozen=True)
 class MemoryBuilderRewardConfig:
     grounding_threshold: float = 0.8
+    answer_threshold: float = 0.8
+    retention_threshold: float = 0.8
+    quality_threshold: float = 0.6
     retrieval_top_k: int = 5
     max_protected_questions: int = 3
-    memory_cost_weight: float = 0.05
     max_memory_tokens: int = 128
+    gain_weight: float = 0.7
+    quality_weight: float = 0.2
+    growth_weight: float = 0.1
+    shrink_weight: float = 0.1
 
 
 class MemoryBuilderReward:
@@ -57,15 +66,18 @@ class MemoryBuilderReward:
                 response,
                 context.observation.memory_neighborhood,
             )
-        except (json.JSONDecodeError, KeyError, TypeError, AttributeError, ValueError):
-            return self._invalid()
+        except ActionSchemaError:
+            return self._result(-1.0)
+        except ActionConstraintError:
+            return self._result(-0.8, schema_valid=1.0)
         if not self._valid_action(action, context):
-            return self._invalid(-0.7)
+            return self._result(-0.7, schema_valid=1.0)
         temp = self.builder.execute(
             context.memory,
             context.observation,
             action,
         )
+        growth, shrink = self._size_change(context, temp)
 
         after_results = self.retriever.retrieve(
             context.observation.question,
@@ -95,36 +107,62 @@ class MemoryBuilderReward:
                 protected_answers=protected_answers,
             )
         except StructuredOutputError:
-            return self._neutral()
-
-        if judged.groundedness < self.config.grounding_threshold:
-            return {
-                **self._invalid(),
-                "score": judged.groundedness / self.config.grounding_threshold - 1.0,
-                "groundedness": judged.groundedness,
-            }
+            return self._result(
+                0.0,
+                reward_available=0.0,
+                schema_valid=1.0,
+                action_valid=1.0,
+                growth=growth,
+                shrink=shrink,
+            )
 
         gain = max(0.0, judged.after_correctness - context.before_correctness)
         edit_quality = (judged.action_quality + judged.memory_quality) / 2
-        retention = (
-            sum(judged.retention_correctness) / len(judged.retention_correctness)
-            if judged.retention_correctness
-            else 1.0
+        retention_min = min(judged.retention_correctness, default=1.0)
+        answer_pass = judged.after_correctness >= self.config.answer_threshold
+        retention_pass = retention_min >= self.config.retention_threshold
+        failures = [
+            value / threshold - 1.0
+            for value, threshold in (
+                (judged.groundedness, self.config.grounding_threshold),
+                (judged.after_correctness, self.config.answer_threshold),
+                (judged.action_quality, self.config.quality_threshold),
+                (judged.memory_quality, self.config.quality_threshold),
+                (retention_min, self.config.retention_threshold),
+            )
+            if value < threshold
+        ]
+        commit_valid = not failures
+        score = (
+            min(failures)
+            if failures
+            else max(
+                0.0,
+                min(
+                    1.0,
+                    self.config.gain_weight * gain
+                    + self.config.quality_weight * edit_quality
+                    + self.config.shrink_weight * shrink
+                    - self.config.growth_weight * growth,
+                ),
+            )
         )
-        cost = self._memory_cost(context, temp)
-        score = gain * edit_quality * retention - self.config.memory_cost_weight * cost
-        return {
-            "score": score,
-            "action_valid": 1.0,
-            "after_correctness": judged.after_correctness,
-            "gain": gain,
-            "groundedness": judged.groundedness,
-            "action_quality": judged.action_quality,
-            "memory_quality": judged.memory_quality,
-            "retention": retention,
-            "memory_cost": cost,
-            "reward_available": 1.0,
-        }
+        return self._result(
+            score,
+            schema_valid=1.0,
+            action_valid=1.0,
+            after_correctness=judged.after_correctness,
+            answer_pass=float(answer_pass),
+            groundedness=judged.groundedness,
+            action_quality=judged.action_quality,
+            memory_quality=judged.memory_quality,
+            retention_min=retention_min,
+            retention_pass=float(retention_pass),
+            growth=growth,
+            shrink=shrink,
+            commit_valid=float(commit_valid),
+            gain=gain,
+        )
 
     def _valid_action(
         self,
@@ -137,9 +175,7 @@ class MemoryBuilderReward:
             return False
 
         memory_tokens = (
-            estimate_token_count(action.new_memory.content)
-            if action.new_memory
-            else 0
+            estimate_token_count(action.new_memory.content) if action.new_memory else 0
         )
         has_memory = 0 < memory_tokens <= self.config.max_memory_tokens
         if action.operation == MemoryOperation.ADD:
@@ -166,9 +202,9 @@ class MemoryBuilderReward:
             for record in passed
             if targets & set(record.supporting_memory_node_ids)
         ]
-        ordered = [*related, *reversed(passed)]
-        unique = {record.question_id: record for record in ordered}
-        return tuple(unique.values())[: self.config.max_protected_questions]
+        if related:
+            return tuple(related)
+        return tuple(reversed(passed))[: self.config.max_protected_questions]
 
     def _answer_capability(
         self,
@@ -186,43 +222,37 @@ class MemoryBuilderReward:
         )
 
     @staticmethod
-    def _memory_cost(context: MemoryBuilderRewardContext, temp) -> float:
-        growth = max(
-            0,
-            temp.active_token_count - context.memory.active_token_count,
-        )
+    def _size_change(context: MemoryBuilderRewardContext, temp) -> tuple[float, float]:
+        before = context.memory.active_token_count
+        after = temp.active_token_count
         evidence_tokens = sum(
             estimate_token_count(item.quote)
             for item in context.observation.new_evidence
         )
-        return min(1.0, growth / max(1, evidence_tokens))
+        growth = min(1.0, max(0, after - before) / max(1, evidence_tokens))
+        shrink = min(1.0, max(0, before - after) / max(1, before))
+        return growth, shrink
 
     @staticmethod
-    def _invalid(score: float = -1.0) -> dict[str, float]:
-        return {
+    def _result(score: float, **values: float) -> dict[str, float]:
+        result = {
             "score": score,
-            "action_valid": 0.0,
-            "after_correctness": 0.0,
-            "gain": 0.0,
-            "groundedness": 0.0,
-            "action_quality": 0.0,
-            "memory_quality": 0.0,
-            "retention": 0.0,
-            "memory_cost": 0.0,
             "reward_available": 1.0,
-        }
-
-    @staticmethod
-    def _neutral() -> dict[str, float]:
-        return {
-            "score": 0.0,
-            "action_valid": 1.0,
-            "after_correctness": 0.0,
-            "gain": 0.0,
+            "schema_valid": 0.0,
+            "action_valid": 0.0,
             "groundedness": 0.0,
+            "after_correctness": 0.0,
+            "answer_pass": 0.0,
             "action_quality": 0.0,
             "memory_quality": 0.0,
-            "retention": 0.0,
-            "memory_cost": 0.0,
-            "reward_available": 0.0,
+            "retention_min": 0.0,
+            "retention_pass": 0.0,
+            "growth": 0.0,
+            "shrink": 0.0,
+            "commit_valid": 0.0,
+            "gain": 0.0,
         }
+        result.update(values)
+        result["retention"] = result["retention_min"]
+        result["memory_cost"] = result["growth"]
+        return result

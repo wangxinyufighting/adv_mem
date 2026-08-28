@@ -1,6 +1,5 @@
 MemOS/
 .DS_Store
-CODE_GUIDE.md
 logs/
 .memos/
 tests/
@@ -11,3 +10,4 @@ data/
 main.py
 **/__pycache__/
 *.pyc
+CODE_GUIDE.md

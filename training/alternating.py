@@ -156,7 +156,10 @@ class MemoryTrainingFlow:
         reward: dict[str, float],
     ) -> bool:
         evidence = self._evidence(pending.candidate)
-        if reward["score"] <= self.commit_threshold:
+        if (
+            not reward.get("commit_valid", 0.0)
+            or reward["score"] <= self.commit_threshold
+        ):
             self.store.mark_high_priority(pending.capability, evidence)
             return False
 
@@ -307,7 +310,10 @@ class AlternatingTrainer:
                 if not reward.get("reward_available", 1.0):
                     self.flow.defer_question(refreshed.candidate)
                     continue
-                if reward["score"] <= self.flow.commit_threshold:
+                if (
+                    not reward.get("commit_valid", 0.0)
+                    or reward["score"] <= self.flow.commit_threshold
+                ):
                     self.flow.discard(refreshed)
                     discarded += 1
                     continue

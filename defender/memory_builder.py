@@ -14,6 +14,14 @@ from memory.store import MemoryStore
 from utils.json_output import parse_json_object
 
 
+class ActionSchemaError(ValueError):
+    pass
+
+
+class ActionConstraintError(ValueError):
+    pass
+
+
 SYSTEM_PROMPT = """You are a long-term memory editor.
 Choose exactly one operation using only the new evidence and memory neighborhood.
 
@@ -96,30 +104,36 @@ class MemoryBuilder:
         response: str,
         neighborhood: tuple[MemoryNode, ...],
     ) -> MemoryEditAction:
-        payload = parse_json_object(
-            response,
-            ("operation", "targets", "content"),
-        )
+        try:
+            payload = parse_json_object(
+                response,
+                ("operation", "targets", "content"),
+            )
+        except ValueError as error:
+            raise ActionSchemaError from error
         if set(payload) != {"operation", "targets", "content"}:
-            raise ValueError(
+            raise ActionSchemaError(
                 "Action must contain exactly operation, targets, and content"
             )
         if not isinstance(payload["operation"], str):
-            raise ValueError("operation must be a string")
+            raise ActionSchemaError("operation must be a string")
         if not isinstance(payload["targets"], list) or any(
             type(index) is not int for index in payload["targets"]
         ):
-            raise ValueError("targets must be a list of integer indices")
+            raise ActionSchemaError("targets must be a list of integer indices")
         if not isinstance(payload["content"], str):
-            raise ValueError("content must be a string")
+            raise ActionSchemaError("content must be a string")
 
-        operation = MemoryOperation(payload["operation"])
+        try:
+            operation = MemoryOperation(payload["operation"])
+        except ValueError as error:
+            raise ActionConstraintError from error
         indices = payload["targets"]
         content = payload["content"]
         if len(indices) != len(set(indices)):
-            raise ValueError("targets must be unique")
+            raise ActionConstraintError("targets must be unique")
         if any(index < 0 or index >= len(neighborhood) for index in indices):
-            raise ValueError("target index is outside memory_neighborhood")
+            raise ActionConstraintError("target index is outside memory_neighborhood")
 
         has_content = bool(content.strip())
         valid_shape = {
@@ -129,7 +143,7 @@ class MemoryBuilder:
             MemoryOperation.NOOP: not indices and content == "",
         }
         if not valid_shape[operation]:
-            raise ValueError(f"Invalid fields for {operation.value}")
+            raise ActionConstraintError(f"Invalid fields for {operation.value}")
 
         return MemoryEditAction(
             operation=operation,

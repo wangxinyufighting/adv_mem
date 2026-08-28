@@ -333,7 +333,10 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                         if not reward.get("reward_available", 1.0):
                             case_round.flow.defer_question(current.candidate)
                             continue
-                        if reward["score"] <= case_round.flow.commit_threshold:
+                        if (
+                            not reward.get("commit_valid", 0.0)
+                            or reward["score"] <= case_round.flow.commit_threshold
+                        ):
                             case_round.flow.discard(current)
                             case_round.discarded += 1
                             continue

@@ -27,9 +27,17 @@ from utils.memory_retrieval import HybridMemoryRetriever
 class AttackerRewardConfig:
     gold_threshold: float = 0.8
     parametric_threshold: float = 0.8
+    memory_threshold: float = 0.8
+    value_threshold: float = 0.5
+    novelty_threshold: float = 0.2
+    route_threshold: float = 0.8
     memory_top_k: int = 5
     novelty_low: float = 0.75
     novelty_high: float = 0.92
+    uncovered_weight: float = 0.4
+    value_weight: float = 0.25
+    novelty_weight: float = 0.2
+    route_weight: float = 0.15
 
 
 class AttackerReward:
@@ -79,26 +87,29 @@ class AttackerReward:
             "response": response,
         }
         try:
-            question = parse_json_object(response, ("question",))["question"].strip()
-        except (ValueError, KeyError, TypeError, AttributeError):
+            payload = parse_json_object(response, ("question",))
+        except ValueError:
             return self._finish(
-                self._invalid(format_valid=0.0),
+                self._result(-1.0),
                 trace,
-                stage="format_invalid",
+                stage="schema_invalid",
+            )
+        if (
+            set(payload) != {"question"}
+            or not isinstance(payload["question"], str)
+            or not is_clean_json_object(response)
+        ):
+            return self._finish(
+                self._result(-1.0),
+                trace,
+                stage="schema_invalid",
             )
 
-        if not question:
-            return self._finish(
-                self._invalid(format_valid=0.0),
-                trace,
-                stage="format_invalid",
-            )
-
+        question = payload["question"].strip()
         trace["question"] = question
-        format_valid = 1.0 if is_clean_json_object(response) else 0.5
-        if not question.endswith(("?", "\uff1f")):
+        if not question or not question.endswith(("?", "\uff1f")):
             return self._finish(
-                self._invalid(format_valid=format_valid, score=-0.9),
+                self._result(-0.9, schema_valid=1.0),
                 trace,
                 stage="question_invalid",
             )
@@ -109,7 +120,11 @@ class AttackerReward:
             for item in context.prior_questions
         }:
             return self._finish(
-                self._invalid(format_valid=format_valid),
+                self._result(
+                    -1.0,
+                    schema_valid=1.0,
+                    question_valid=1.0,
+                ),
                 trace,
                 stage="duplicate",
             )
@@ -118,7 +133,12 @@ class AttackerReward:
             oracle = self.oracle.evaluate(question, context.route)
         except StructuredOutputError as error:
             return self._finish(
-                self._neutral(format_valid),
+                self._result(
+                    0.0,
+                    reward_available=0.0,
+                    schema_valid=1.0,
+                    question_valid=1.0,
+                ),
                 trace,
                 stage="oracle_unavailable",
                 error=str(error),
@@ -126,9 +146,10 @@ class AttackerReward:
         if not oracle.valid:
             relevance = self._route_relevance(question, context.route)
             return self._finish(
-                self._invalid(
-                    format_valid=format_valid,
-                    score=-0.8 + 0.4 * relevance,
+                self._result(
+                    -0.8 + 0.4 * relevance,
+                    schema_valid=1.0,
+                    question_valid=1.0,
                 ),
                 trace,
                 stage="oracle_invalid",
@@ -161,7 +182,13 @@ class AttackerReward:
             )
         except StructuredOutputError as error:
             return self._finish(
-                self._neutral(format_valid, oracle_valid=1.0),
+                self._result(
+                    0.0,
+                    reward_available=0.0,
+                    schema_valid=1.0,
+                    question_valid=1.0,
+                    oracle_valid=1.0,
+                ),
                 trace,
                 stage="judge_unavailable",
                 error=str(error),
@@ -178,48 +205,75 @@ class AttackerReward:
             }
         )
 
-        if judged.gold_correctness < self.config.gold_threshold:
-            result = {
-                **self._invalid(format_valid=format_valid, oracle_valid=1.0),
-                "score": judged.gold_correctness / self.config.gold_threshold - 1.0,
-                "gold_correctness": judged.gold_correctness,
-            }
-            return self._finish(result, trace, stage="gold_invalid")
-
-        if judged.parametric_correctness >= self.config.parametric_threshold:
-            result = {
-                **self._invalid(
-                    format_valid=format_valid,
-                    oracle_valid=1.0,
-                    score=-judged.parametric_correctness,
-                ),
-                "gold_correctness": judged.gold_correctness,
-                "parametric_correctness": judged.parametric_correctness,
-            }
-            return self._finish(result, trace, stage="parametric_answerable")
-
-        uncovered = max(
-            0.0,
-            judged.gold_correctness - judged.memory_correctness,
-        )
+        uncovered = 1.0 - judged.memory_correctness
         novelty = self._novelty(question, oracle, context)
         fidelity = self._route_fidelity(context.route, oracle)
-        score = (judged.value * uncovered * novelty * fidelity) ** 0.25
-        score *= format_valid
-        result = {
-            "score": score,
-            "format_valid": format_valid,
+        gold_pass = judged.gold_correctness >= self.config.gold_threshold
+        parametric_pass = (
+            judged.parametric_correctness < self.config.parametric_threshold
+        )
+        uncovered_pass = judged.memory_correctness < self.config.memory_threshold
+        value_pass = judged.value >= self.config.value_threshold
+        novelty_pass = novelty >= self.config.novelty_threshold
+        route_pass = fidelity >= self.config.route_threshold
+        metrics = {
+            "schema_valid": 1.0,
+            "question_valid": 1.0,
             "oracle_valid": 1.0,
             "gold_correctness": judged.gold_correctness,
+            "gold_pass": float(gold_pass),
             "memory_correctness": judged.memory_correctness,
-            "parametric_correctness": judged.parametric_correctness,
-            "value": judged.value,
             "uncovered": uncovered,
+            "uncovered_pass": float(uncovered_pass),
+            "parametric_correctness": judged.parametric_correctness,
+            "parametric_pass": float(parametric_pass),
+            "value": judged.value,
+            "value_pass": float(value_pass),
             "novelty": novelty,
+            "novelty_pass": float(novelty_pass),
             "route_fidelity": fidelity,
-            "reward_available": 1.0,
+            "route_pass": float(route_pass),
         }
-        return self._finish(result, trace, stage="scored")
+        failures = []
+        if not gold_pass:
+            failures.append(
+                (
+                    "gold_invalid",
+                    judged.gold_correctness / self.config.gold_threshold - 1.0,
+                )
+            )
+        if not parametric_pass:
+            failures.append(("parametric_answerable", -judged.parametric_correctness))
+        if not uncovered_pass:
+            failures.append(("memory_answerable", -judged.memory_correctness))
+        if not value_pass:
+            failures.append(
+                ("low_value", judged.value / self.config.value_threshold - 1.0)
+            )
+        if not novelty_pass:
+            failures.append(
+                ("redundant", novelty / self.config.novelty_threshold - 1.0)
+            )
+        if not route_pass:
+            failures.append(
+                ("route_unfaithful", fidelity / self.config.route_threshold - 1.0)
+            )
+        if failures:
+            stage, score = min(failures, key=lambda item: item[1])
+            return self._finish(self._result(score, **metrics), trace, stage=stage)
+
+        score = min(
+            1.0,
+            self.config.uncovered_weight * uncovered
+            + self.config.value_weight * judged.value
+            + self.config.novelty_weight * novelty
+            + self.config.route_weight * fidelity,
+        )
+        return self._finish(
+            self._result(score, attack_valid=1.0, **metrics),
+            trace,
+            stage="scored",
+        )
 
     def _finish(
         self,
@@ -281,40 +335,28 @@ class AttackerReward:
         )
 
     @staticmethod
-    def _invalid(
-        format_valid: float,
-        oracle_valid: float = 0.0,
-        score: float = -1.0,
-    ) -> dict[str, float]:
-        return {
+    def _result(score: float, **values: float) -> dict[str, float]:
+        result = {
             "score": score,
-            "format_valid": format_valid,
-            "oracle_valid": oracle_valid,
-            "gold_correctness": 0.0,
-            "memory_correctness": 0.0,
-            "parametric_correctness": 0.0,
-            "value": 0.0,
-            "uncovered": 0.0,
-            "novelty": 0.0,
-            "route_fidelity": 0.0,
             "reward_available": 1.0,
-        }
-
-    @staticmethod
-    def _neutral(
-        format_valid: float,
-        oracle_valid: float = 0.0,
-    ) -> dict[str, float]:
-        return {
-            "score": 0.0,
-            "format_valid": format_valid,
-            "oracle_valid": oracle_valid,
+            "schema_valid": 0.0,
+            "question_valid": 0.0,
+            "oracle_valid": 0.0,
             "gold_correctness": 0.0,
+            "gold_pass": 0.0,
             "memory_correctness": 0.0,
-            "parametric_correctness": 0.0,
-            "value": 0.0,
             "uncovered": 0.0,
+            "uncovered_pass": 0.0,
+            "parametric_correctness": 0.0,
+            "parametric_pass": 0.0,
+            "value": 0.0,
+            "value_pass": 0.0,
             "novelty": 0.0,
+            "novelty_pass": 0.0,
             "route_fidelity": 0.0,
-            "reward_available": 0.0,
+            "route_pass": 0.0,
+            "attack_valid": 0.0,
         }
+        result.update(values)
+        result["format_valid"] = result["schema_valid"]
+        return result

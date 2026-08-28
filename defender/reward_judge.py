@@ -14,10 +14,11 @@ SYSTEM_PROMPT = """Evaluate a proposed long-term memory edit.
 
 Score from 0 to 1:
 - after_correctness: the new answer against the canonical answer.
-- groundedness: whether new_memory is fully supported by new_evidence.
+- groundedness: for ADD, whether new_memory is fully supported by new_evidence;
+  for MERGE, whether it is fully supported by new_evidence and targeted memories.
 - action_quality: whether ADD, MERGE, DELETE, or NOOP and its targets are appropriate.
 - memory_quality: whether new_memory is durable, concise, complete, and not a QA pair.
-- retention_correctness: each protected answer against its canonical answer.
+- retention_correctness: each protected answer against its canonical answer, in order.
 
 For DELETE or NOOP, groundedness and memory_quality are 1. Return JSON only:
 {"after_correctness":0.0,"groundedness":0.0,"action_quality":0.0,"memory_quality":0.0,"retention_correctness":[]}"""
@@ -121,16 +122,31 @@ class DeepSeekMemoryJudge:
             "memory_quality",
             "retention_correctness",
         )
+
+        def transform(result: dict[str, Any]) -> MemoryJudgeResult:
+            names = required[:-1]
+            if any(
+                isinstance(result[name], bool)
+                or not isinstance(result[name], (int, float))
+                for name in names
+            ):
+                raise TypeError("Judge scores must be numeric")
+            scores = tuple(float(result[name]) for name in names)
+            retention = result["retention_correctness"]
+            if not isinstance(retention, list) or any(
+                isinstance(score, bool) or not isinstance(score, (int, float))
+                for score in retention
+            ):
+                raise TypeError("retention_correctness must be a numeric list")
+            retention_scores = tuple(float(score) for score in retention)
+            if any(not 0.0 <= score <= 1.0 for score in (*scores, *retention_scores)):
+                raise ValueError("Judge scores must be between 0 and 1")
+            if len(retention_scores) != len(protected_answers):
+                raise ValueError("Judge returned the wrong number of retention scores")
+            return MemoryJudgeResult(*scores, retention_scores)
+
         return retry_json_object(
             request,
             required,
-            lambda result: MemoryJudgeResult(
-                after_correctness=float(result["after_correctness"]),
-                groundedness=float(result["groundedness"]),
-                action_quality=float(result["action_quality"]),
-                memory_quality=float(result["memory_quality"]),
-                retention_correctness=tuple(
-                    float(score) for score in result["retention_correctness"]
-                ),
-            ),
+            transform,
         )

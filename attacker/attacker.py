@@ -7,7 +7,7 @@ from attacker.models import (
     GraphRouteBundle,
 )
 from memory.models import MemoryState
-from utils.json_output import parse_json_object
+from utils.json_output import is_clean_json_object, parse_json_object
 from utils.memory_retrieval import HybridMemoryRetriever
 
 
@@ -68,7 +68,14 @@ class Attacker:
 
     @staticmethod
     def parse_question(response: str) -> str:
-        return parse_json_object(response, ("question",))["question"].strip()
+        payload = parse_json_object(response, ("question",))
+        if (
+            set(payload) != {"question"}
+            or not isinstance(payload["question"], str)
+            or not is_clean_json_object(response)
+        ):
+            raise ValueError("Invalid question schema")
+        return payload["question"].strip()
 
     @staticmethod
     def normalize_question(question: str) -> str:

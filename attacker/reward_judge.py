@@ -90,15 +90,26 @@ class DeepSeekRewardJudge:
         required = ["gold_correctness", "memory_correctness", "value"]
         if parametric_answer is not None:
             required.append("parametric_correctness")
+
+        def transform(result: dict[str, Any]) -> RewardJudgeResult:
+            if any(
+                isinstance(result[name], bool)
+                or not isinstance(result[name], (int, float))
+                for name in required
+            ):
+                raise TypeError("Judge scores must be numeric")
+            scores = {name: float(result[name]) for name in required}
+            if any(not 0.0 <= score <= 1.0 for score in scores.values()):
+                raise ValueError("Judge scores must be between 0 and 1")
+            return RewardJudgeResult(
+                gold_correctness=scores["gold_correctness"],
+                memory_correctness=scores["memory_correctness"],
+                value=scores["value"],
+                parametric_correctness=scores.get("parametric_correctness", 0.0),
+            )
+
         return retry_json_object(
             request,
             required,
-            lambda result: RewardJudgeResult(
-                gold_correctness=float(result["gold_correctness"]),
-                memory_correctness=float(result["memory_correctness"]),
-                value=float(result["value"]),
-                parametric_correctness=float(
-                    result.get("parametric_correctness", 0.0)
-                ),
-            ),
+            transform,
         )
