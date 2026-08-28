@@ -9,12 +9,40 @@ from attacker.models import OracleResult
 from utils.json_output import retry_json_object
 
 
-SYSTEM_PROMPT = """Evaluate a memory question and candidate answers.
+SYSTEM_PROMPT = """Evaluate one conversational-memory question and the candidate
+answers supplied in the input.
 
-Score each supplied answer's correctness from 0 to 1 against the canonical answer.
-Score value from 0 to 1 based on whether the question captures useful, substantive,
-natural, user-relevant information rather than artificial trivia. Judge all scores
-independently. Return JSON only:
+Correctness:
+- Score each candidate independently against the canonical answer.
+- 1.0 means the essential answer is fully correct and has no contradiction.
+- 0.5 means partially correct, incomplete, or materially underspecified.
+- 0.0 means incorrect, contradictory, irrelevant, or unable to answer.
+- Judge semantic equivalence rather than exact wording.
+- If parametric_answer is absent, set parametric_correctness to 0.0.
+
+Value measures the question's diagnostic value for long-term conversational memory,
+not how important the subject is in everyday life. Judge value independently from
+candidate correctness, novelty, and whether the current memory already answers it.
+
+Use this value rubric:
+- 0.90-1.00: strongly tests integration, comparison, temporal reasoning, state
+  updates, personalized application, or another substantive memory capability.
+- 0.70-0.89: clearly requires multiple related memories or a specific previous
+  assistant response, decision, preference, or constraint.
+- 0.50-0.69: clearly recalls one specific user or conversation fact. Direct recall
+  remains valuable even when the fact is ordinary or the question is easy.
+- 0.20-0.49: user-related but vague, weakly diagnostic, mechanically combined, or
+  focused on incidental metadata without a meaningful memory target.
+- 0.00-0.19: generic knowledge, answer leakage, unsupported content, graph
+  metadata, or an artificial question with no clear memory capability.
+
+Do not reward complexity by itself. A multi-fact question is valuable only when the
+facts jointly determine a clear answer. A recommendation or advice question is
+valuable when remembered preferences, constraints, or prior experience should
+materially shape the response.
+
+Return exactly one JSON object with numeric values from 0 to 1 and no additional
+fields:
 {"gold_correctness":0.0,"memory_correctness":0.0,"parametric_correctness":0.0,"value":0.0}"""
 
 
