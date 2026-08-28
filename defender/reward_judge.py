@@ -10,17 +10,42 @@ from memory.models import CapabilityRecord, MemoryEditAction, MemoryNode
 from utils.json_output import retry_json_object
 
 
-SYSTEM_PROMPT = """Evaluate a proposed long-term memory edit.
+SYSTEM_PROMPT = """Evaluate one proposed long-term conversational-memory edit.
+Score every field independently from 0 to 1.
 
-Score from 0 to 1:
-- after_correctness: the new answer against the canonical answer.
-- groundedness: for ADD, whether new_memory is fully supported by new_evidence;
-  for MERGE, whether it is fully supported by new_evidence and targeted memories.
-- action_quality: whether ADD, MERGE, DELETE, or NOOP and its targets are appropriate.
-- memory_quality: whether new_memory is durable, concise, complete, and not a QA pair.
-- retention_correctness: each protected answer against its canonical answer, in order.
+Correctness:
+- after_correctness compares after_answer with canonical_answer.
+- retention_correctness compares each protected after_answer with its canonical
+  answer, preserving the supplied order.
+- Use 1.0 for fully correct, 0.5 for partially correct or materially incomplete,
+  and 0.0 for incorrect, contradictory, irrelevant, or unable to answer.
+- Judge semantic equivalence rather than exact wording.
 
-For DELETE or NOOP, groundedness and memory_quality are 1. Return JSON only:
+Groundedness:
+- ADD content may use only new_evidence.
+- MERGE content may use new_evidence and targeted memories.
+- Score 1.0 only when every claim is supported and roles are represented correctly.
+- For DELETE and NOOP, groundedness is 1.0.
+
+Action quality:
+- ADD is appropriate for separate useful evidence not represented nearby.
+- MERGE is appropriate for extending, correcting, or combining related memories;
+  targets must be relevant and minimal.
+- DELETE is appropriate only for a demonstrably false or fully redundant memory
+  when no replacement content is needed.
+- NOOP is appropriate only when no grounded edit can improve memory.
+- Preserve real temporal evolution; an older true state is not obsolete merely
+  because a newer state exists.
+
+Memory quality:
+- New memory should be self-contained, concise, complete, and reusable.
+- It must preserve necessary names, numbers, dates, negation, preferences,
+  constraints, temporal order, and valid details from targeted memories.
+- It must not be a transcript, question-answer pair, ID, unsupported inference, or
+  assistant statement misrepresented as a user fact.
+- For DELETE and NOOP, memory_quality is 1.0.
+
+Return exactly one JSON object with no additional fields:
 {"after_correctness":0.0,"groundedness":0.0,"action_quality":0.0,"memory_quality":0.0,"retention_correctness":[]}"""
 
 

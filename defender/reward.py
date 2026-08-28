@@ -89,7 +89,7 @@ class MemoryBuilderReward:
             tuple(result.node for result in after_results),
         )
 
-        protected = self._protected_capabilities(action, context)
+        protected = self._protected_capabilities(context)
         protected_answers = tuple(
             ProtectedAnswer(
                 capability=record,
@@ -188,23 +188,15 @@ class MemoryBuilderReward:
 
     def _protected_capabilities(
         self,
-        action: MemoryEditAction,
         context: MemoryBuilderRewardContext,
     ) -> tuple[CapabilityRecord, ...]:
-        passed = [
-            record
-            for record in context.memory.capability_ledger.values()
-            if record.passed
-        ]
-        targets = set(action.target_node_ids)
-        related = [
-            record
-            for record in passed
-            if targets & set(record.supporting_memory_node_ids)
-        ]
-        if related:
-            return tuple(related)
-        return tuple(reversed(passed))[: self.config.max_protected_questions]
+        ledger = context.memory.capability_ledger
+        return tuple(
+            ledger[item.question_id]
+            for item in context.observation.protected_questions[
+                : self.config.max_protected_questions
+            ]
+        )
 
     def _answer_capability(
         self,

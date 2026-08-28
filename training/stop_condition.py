@@ -3,6 +3,7 @@ from itertools import combinations
 from typing import Any
 
 from defender.memory_builder import MemoryBuilder
+from defender.models import ProtectedQuestion
 from memory.models import MemoryOperation, MemoryState
 from memory.store import MemoryStore
 from training.alternating import QuestionCandidate
@@ -81,8 +82,20 @@ class CompactionAuditor:
         attempts = 0
         for neighborhood in self._neighborhoods(memory):
             attempts += 1
+            visible_question_ids = self._protected_questions(
+                memory,
+                tuple(node.id for node in neighborhood),
+            )
             response = policy.generate(
-                self.builder.build_compaction_prompt(neighborhood),
+                self.builder.build_compaction_prompt(
+                    neighborhood,
+                    tuple(
+                        ProtectedQuestion.from_capability(
+                            memory.capability_ledger[question_id]
+                        )
+                        for question_id in visible_question_ids
+                    ),
+                ),
                 512,
             )
             try:

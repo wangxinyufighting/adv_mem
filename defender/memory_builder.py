@@ -2,7 +2,11 @@ import json
 from typing import Any
 
 from attacker.models import OracleResult
-from defender.models import MemoryBuilderObservation, MemoryBuilderRewardContext
+from defender.models import (
+    MemoryBuilderObservation,
+    MemoryBuilderRewardContext,
+    ProtectedQuestion,
+)
 from memory.models import (
     MemoryDraft,
     MemoryEditAction,
@@ -22,37 +26,78 @@ class ActionConstraintError(ValueError):
     pass
 
 
-SYSTEM_PROMPT = """You are a long-term memory editor.
-Choose exactly one operation using only the new evidence and memory neighborhood.
+SYSTEM_PROMPT = """Edit long-term conversational memory so the current question
+becomes answerable without losing previously supported information.
 
-ADD: create a new memory when the evidence contains useful knowledge not stored nearby.
-MERGE: replace one or more nearby memories with a single better memory.
-DELETE: archive nearby memories that are wrong, obsolete, or no longer useful.
-NOOP: make no change when the evidence adds no useful memory.
+Priorities, in order:
+1. Grounded: every new claim must be supported by new_evidence or targeted memories.
+2. Effective: the resulting memory must support the current question.
+3. Retentive: preserve valid facts that may support protected_questions.
+4. Minimal: use the smallest justified edit and concise memory content.
 
-Write at most two concise sentences of durable factual memory, not a transcript or
-question-answer pair. Each nearby memory has an integer index. Targets may contain
-only unique indices from memory_neighborhood. MERGE may target one memory when
-revising it. When memory_neighborhood is empty, only ADD or NOOP is valid.
+The question indicates relevance but is not evidence. Durable means reusable later,
+not necessarily timeless; preserve dates and earlier/current states when they matter.
 
-Return JSON only with exactly these three fields:
+Choose exactly one operation:
+- ADD: store useful evidence not represented by a nearby memory.
+- MERGE: revise or combine nearby memories when evidence concerns the same person,
+  event, topic, preference, or state. One target is allowed for revision.
+- DELETE: remove a target only when it is demonstrably false or fully redundant and
+  no replacement content is needed.
+- NOOP: use only when no grounded edit can improve the memory.
+
+Prefer MERGE over ADD when new evidence updates or extends a nearby memory. Do not
+target unrelated memories. MERGE must preserve every valid answer-relevant fact from
+its targets while integrating only supported new information. If evidence corrects
+a false statement, remove it. If the user genuinely changed, preserve both states
+and their order.
+
+Write one or two concise, self-contained sentences. Preserve necessary names,
+numbers, dates, negation, preferences, constraints, and relationships. Identify
+assistant content as a prior assistant response, not as a user fact. Do not write a
+transcript, question-answer pair, IDs, analysis, or unsupported inference.
+
+Each nearby memory has an integer index. Targets may contain only unique indices
+from memory_neighborhood. When memory_neighborhood is empty, only ADD or NOOP is
+valid.
+
+Return exactly one JSON object with no additional fields:
 {"operation":"add","targets":[],"content":"..."}
+
 operation must be add, merge, delete, or noop.
 ADD: empty targets and non-empty content.
 MERGE: non-empty targets and non-empty content.
 DELETE: non-empty targets and empty content.
 NOOP: empty targets and empty content."""
 
-COMPACTION_PROMPT = """Compress a long-term memory without losing information.
-Use MERGE to replace at least two memories with one shorter complete memory. Use
-DELETE only when a memory is redundant. Otherwise use NOOP. Preserve every fact
-needed by linked_questions and target only unique neighborhood indices.
+COMPACTION_PROMPT = """Compress the supplied long-term memory neighborhood only
+when a smaller representation is lossless.
 
-Return JSON only with exactly these three fields:
+Priorities:
+1. Preserve every supported fact and the answer to every protected question.
+2. Reduce active memory size.
+3. Use NOOP whenever lossless compression is uncertain.
+
+Choose exactly one operation:
+- MERGE: combine at least two related memories into one shorter memory while
+  preserving every factual distinction from the targets.
+- DELETE: remove a target only when all its information remains explicitly available
+  in a non-targeted memory. Never delete every copy.
+- NOOP: use when memories are unrelated, not redundant, or cannot be shortened
+  without information loss.
+
+Preserve names, quantities, dates, event order, negation, preferences, constraints,
+and earlier/current states. An older fact is not redundant when it records a real
+earlier state. Do not combine unrelated facts, invent information, or resolve
+conflicts by guessing. Target only unique indices from memory_neighborhood.
+
+Return exactly one JSON object with no additional fields:
 {"operation":"noop","targets":[],"content":""}
+
 operation must be merge, delete, or noop.
-MERGE requires at least two targets and non-empty content. DELETE requires non-empty
-targets and empty content. NOOP requires empty targets and empty content."""
+MERGE: at least two targets and non-empty content.
+DELETE: non-empty targets and empty content.
+NOOP: empty targets and empty content."""
 
 
 class MemoryBuilder:
@@ -74,7 +119,8 @@ class MemoryBuilder:
 
     def build_compaction_prompt(
         self,
-        neighborhood: tuple,
+        neighborhood: tuple[MemoryNode, ...],
+        protected_questions: tuple[ProtectedQuestion, ...] = (),
     ) -> list[dict[str, str]]:
         return [
             {"role": "system", "content": COMPACTION_PROMPT},
@@ -91,7 +137,15 @@ class MemoryBuilder:
                                 "time_span": node.time_span,
                             }
                             for index, node in enumerate(neighborhood)
-                        ]
+                        ],
+                        "protected_questions": [
+                            {
+                                "id": item.question_id,
+                                "question": item.question,
+                                "canonical_answer": item.canonical_answer,
+                            }
+                            for item in protected_questions
+                        ],
                     },
                     ensure_ascii=False,
                 )

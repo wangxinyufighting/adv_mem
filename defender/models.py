@@ -2,7 +2,18 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from attacker.models import OracleResult, SupportingEvidence
-from memory.models import MemoryNode, MemoryState
+from memory.models import CapabilityRecord, MemoryNode, MemoryState
+
+
+@dataclass(frozen=True)
+class ProtectedQuestion:
+    question_id: str
+    question: str
+    canonical_answer: str
+
+    @classmethod
+    def from_capability(cls, record: CapabilityRecord) -> "ProtectedQuestion":
+        return cls(record.question_id, record.question, record.oracle_answer)
 
 
 @dataclass(frozen=True)
@@ -12,6 +23,7 @@ class MemoryBuilderObservation:
     question: str
     new_evidence: tuple[SupportingEvidence, ...]
     memory_neighborhood: tuple[MemoryNode, ...]
+    protected_questions: tuple[ProtectedQuestion, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -21,6 +33,9 @@ class MemoryBuilderObservation:
             "new_evidence": [asdict(item) for item in self.new_evidence],
             "memory_neighborhood": [
                 node.to_dict() for node in self.memory_neighborhood
+            ],
+            "protected_questions": [
+                asdict(item) for item in self.protected_questions
             ],
         }
 
@@ -45,6 +60,14 @@ class MemoryBuilderObservation:
                 }
                 for index, node in enumerate(self.memory_neighborhood)
             ],
+            "protected_questions": [
+                {
+                    "id": item.question_id,
+                    "question": item.question,
+                    "canonical_answer": item.canonical_answer,
+                }
+                for item in self.protected_questions
+            ],
         }
 
     @classmethod
@@ -58,6 +81,9 @@ class MemoryBuilderObservation:
             ),
             memory_neighborhood=tuple(
                 MemoryNode.from_dict(item) for item in payload["memory_neighborhood"]
+            ),
+            protected_questions=tuple(
+                ProtectedQuestion(**item) for item in payload["protected_questions"]
             ),
         )
 

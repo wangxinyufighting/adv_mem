@@ -5,11 +5,16 @@ from typing import Any
 from attacker.attacker import Attacker
 from attacker.models import GraphRouteBundle, OracleResult
 from defender.memory_builder import MemoryBuilder
-from defender.models import MemoryBuilderObservation, MemoryBuilderRewardContext
+from defender.models import (
+    MemoryBuilderObservation,
+    MemoryBuilderRewardContext,
+    ProtectedQuestion,
+)
 from memory.models import (
     CapabilityRecord,
     MemoryEditAction,
     MemoryEvidence,
+    MemoryNode,
     MemoryState,
 )
 from memory.store import MemoryStore
@@ -71,6 +76,7 @@ class MemoryTrainingFlow:
         top_k: int = 5,
         defense_threshold: float = 0.8,
         commit_threshold: float = 0.0,
+        max_protected_questions: int = 3,
     ):
         self.store = store
         self.retriever = retriever
@@ -80,6 +86,7 @@ class MemoryTrainingFlow:
         self.top_k = top_k
         self.defense_threshold = defense_threshold
         self.commit_threshold = commit_threshold
+        self.max_protected_questions = max_protected_questions
 
     def process_question(
         self,
@@ -120,6 +127,7 @@ class MemoryTrainingFlow:
             question=candidate.oracle.question,
             new_evidence=candidate.oracle.supporting_evidence,
             memory_neighborhood=memories,
+            protected_questions=self._protected_questions(memories),
         )
         return PendingMemoryEdit(
             candidate=candidate,
@@ -202,6 +210,28 @@ class MemoryTrainingFlow:
             self.store.state.capability_ledger[question_id]
             for question_id in self.store.state.high_priority_buffer
         )
+
+    def _protected_questions(
+        self,
+        memories: tuple[MemoryNode, ...],
+    ) -> tuple[ProtectedQuestion, ...]:
+        linked = {
+            question_id
+            for memory in memories
+            for question_id in memory.linked_questions
+        }
+        passed = [
+            record
+            for record in self.store.state.capability_ledger.values()
+            if record.passed
+        ]
+        related = [
+            record for record in reversed(passed) if record.question_id in linked
+        ]
+        selected = (related or list(reversed(passed)))[
+            : self.max_protected_questions
+        ]
+        return tuple(ProtectedQuestion.from_capability(record) for record in selected)
 
     @staticmethod
     def _capability(candidate: QuestionCandidate) -> CapabilityRecord:
