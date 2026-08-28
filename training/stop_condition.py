@@ -7,6 +7,7 @@ from defender.models import ProtectedQuestion
 from memory.models import MemoryOperation, MemoryState
 from memory.store import MemoryStore
 from training.alternating import QuestionCandidate
+from training.support_attribution import SupportAttributor
 from utils.json_output import StructuredOutputError
 
 
@@ -77,6 +78,11 @@ class CompactionAuditor:
         self.answer_judge = answer_judge
         self.questions = questions
         self.config = config
+        self.support_attributor = SupportAttributor(
+            answer_agent,
+            answer_judge,
+            config.defense_threshold,
+        )
 
     def audit(self, policy: Any, memory: MemoryState) -> CompactionAudit:
         attempts = 0
@@ -173,7 +179,7 @@ class CompactionAuditor:
         store = MemoryStore(memory)
         for question_id in question_ids:
             candidate = self.questions[question_id]
-            _, node_ids = self._answer(candidate, store.state)
+            _, node_ids = self._answer(candidate, store.state, attribute=True)
             record = store.state.capability_ledger[question_id]
             evidence = store.state.evidence_ledger.get(question_id, ())
             store.mark_success(record, node_ids, evidence)
@@ -183,6 +189,7 @@ class CompactionAuditor:
         self,
         candidate: QuestionCandidate,
         memory: MemoryState,
+        attribute: bool = False,
     ) -> tuple[float, tuple[str, ...]]:
         results = self.retriever.retrieve(
             candidate.oracle.question,
@@ -200,7 +207,15 @@ class CompactionAuditor:
             candidate.golden_answer,
             answer,
         )
-        return judged.memory_correctness, tuple(result.node.id for result in results)
+        memories = tuple(result.node for result in results)
+        node_ids = tuple(node.id for node in memories)
+        if attribute and judged.memory_correctness >= self.config.defense_threshold:
+            node_ids = self.support_attributor.select(
+                candidate.oracle,
+                candidate.golden_answer,
+                memories,
+            )
+        return judged.memory_correctness, node_ids
 
     @staticmethod
     def _valid(action, neighborhood: tuple) -> bool:

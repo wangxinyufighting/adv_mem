@@ -18,6 +18,7 @@ from memory.models import (
     MemoryState,
 )
 from memory.store import MemoryStore
+from training.support_attribution import SupportAttributor
 from utils.json_output import StructuredOutputError
 
 
@@ -87,6 +88,11 @@ class MemoryTrainingFlow:
         self.defense_threshold = defense_threshold
         self.commit_threshold = commit_threshold
         self.max_protected_questions = max_protected_questions
+        self.support_attributor = SupportAttributor(
+            answer_agent,
+            answer_judge,
+            defense_threshold,
+        )
 
     def process_question(
         self,
@@ -114,9 +120,14 @@ class MemoryTrainingFlow:
 
         # Correct answers are defense successes; no memory reconstruction is needed.
         if correctness >= self.defense_threshold:
+            supporting_ids = self.support_attributor.select(
+                candidate.oracle,
+                candidate.golden_answer,
+                memories,
+            )
             self.store.mark_success(
                 capability,
-                tuple(node.id for node in memories),
+                supporting_ids,
                 evidence,
             )
             return None
@@ -184,10 +195,15 @@ class MemoryTrainingFlow:
         if not results:
             self.store.mark_high_priority(pending.capability, evidence)
             return False
+        supporting_ids = self.support_attributor.select(
+            pending.candidate.oracle,
+            pending.candidate.golden_answer,
+            tuple(result.node for result in results),
+        )
         committed = MemoryStore(temp)
         committed.mark_success(
             pending.capability,
-            tuple(result.node.id for result in results),
+            supporting_ids,
             evidence,
         )
         self.store.state = committed.state

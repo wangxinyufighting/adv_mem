@@ -11,6 +11,7 @@ class VerlConfig:
     epochs: int = 1
     batch_size: int = 8
     n_gpus: int = 1
+    max_prompt_length: int = 4096
 
 
 class VerlRunner:
@@ -49,6 +50,7 @@ class VerlRunner:
             "PPO_MINI_BATCH_SIZE": str(batch_size),
             "TOTAL_EPOCHS": str(self.config.epochs),
             "CHECKPOINT_DIR": str(checkpoints),
+            "MAX_PROMPT_LENGTH": str(self.config.max_prompt_length),
         }
         if role == "attacker":
             env["ATTACKER_REWARD_TRACE"] = str(

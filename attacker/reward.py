@@ -8,13 +8,17 @@ from typing import Any
 
 from attacker.answer_agent import QwenAnswerAgent
 from attacker.models import (
-    AttackMode,
     AttackerRewardContext,
     GraphRouteBundle,
     OracleResult,
 )
 from attacker.oracle import DeepSeekOracle
 from attacker.reward_judge import DeepSeekRewardJudge
+from attacker.validation import (
+    answer_is_leaked,
+    question_constraint_error,
+    route_fidelity,
+)
 from utils.json_output import (
     StructuredOutputError,
     is_clean_json_object,
@@ -107,11 +111,12 @@ class AttackerReward:
 
         question = payload["question"].strip()
         trace["question"] = question
-        if not question or not question.endswith(("?", "\uff1f")):
+        constraint_error = question_constraint_error(question, context.route)
+        if constraint_error:
             return self._finish(
                 self._result(-0.9, schema_valid=1.0),
                 trace,
-                stage="question_invalid",
+                stage=constraint_error,
             )
 
         normalized = " ".join(question.casefold().split())
@@ -157,6 +162,35 @@ class AttackerReward:
                 route_relevance=relevance,
             )
 
+        trace.update(
+            {
+                "oracle_answer": oracle.answer,
+                "supporting_source_ids": [
+                    item.source_id for item in oracle.supporting_evidence
+                ],
+            }
+        )
+        fidelity = route_fidelity(context.route, oracle)
+        hard_metrics = {
+            "schema_valid": 1.0,
+            "question_valid": 1.0,
+            "oracle_valid": 1.0,
+            "route_fidelity": fidelity,
+            "route_pass": float(fidelity >= self.config.route_threshold),
+        }
+        if answer_is_leaked(question, oracle.answer):
+            return self._finish(
+                self._result(-1.0, **hard_metrics),
+                trace,
+                stage="answer_leak",
+            )
+        if fidelity < self.config.route_threshold:
+            return self._finish(
+                self._result(-1.0, **hard_metrics),
+                trace,
+                stage="route_unfaithful",
+            )
+
         # Golden corpus is copied verbatim from the Full Memory Graph.
         golden_answer = self.answer_agent.answer_sources(
             question,
@@ -185,9 +219,7 @@ class AttackerReward:
                 self._result(
                     0.0,
                     reward_available=0.0,
-                    schema_valid=1.0,
-                    question_valid=1.0,
-                    oracle_valid=1.0,
+                    **hard_metrics,
                 ),
                 trace,
                 stage="judge_unavailable",
@@ -195,10 +227,6 @@ class AttackerReward:
             )
         trace.update(
             {
-                "oracle_answer": oracle.answer,
-                "supporting_source_ids": [
-                    item.source_id for item in oracle.supporting_evidence
-                ],
                 "golden_answer": golden_answer,
                 "parametric_answer": parametric_answer,
                 "memory_answer": memory_answer,
@@ -207,7 +235,6 @@ class AttackerReward:
 
         uncovered = 1.0 - judged.memory_correctness
         novelty = self._novelty(question, oracle, context)
-        fidelity = self._route_fidelity(context.route, oracle)
         gold_pass = judged.gold_correctness >= self.config.gold_threshold
         parametric_pass = (
             judged.parametric_correctness < self.config.parametric_threshold
@@ -215,7 +242,6 @@ class AttackerReward:
         uncovered_pass = judged.memory_correctness < self.config.memory_threshold
         value_pass = judged.value >= self.config.value_threshold
         novelty_pass = novelty >= self.config.novelty_threshold
-        route_pass = fidelity >= self.config.route_threshold
         metrics = {
             "schema_valid": 1.0,
             "question_valid": 1.0,
@@ -232,7 +258,7 @@ class AttackerReward:
             "novelty": novelty,
             "novelty_pass": float(novelty_pass),
             "route_fidelity": fidelity,
-            "route_pass": float(route_pass),
+            "route_pass": 1.0,
         }
         failures = []
         if not gold_pass:
@@ -253,10 +279,6 @@ class AttackerReward:
         if not novelty_pass:
             failures.append(
                 ("redundant", novelty / self.config.novelty_threshold - 1.0)
-            )
-        if not route_pass:
-            failures.append(
-                ("route_unfaithful", fidelity / self.config.route_threshold - 1.0)
             )
         if failures:
             stage, score = min(failures, key=lambda item: item[1])
@@ -312,13 +334,6 @@ class AttackerReward:
                 / (self.config.novelty_high - self.config.novelty_low),
             ),
         )
-
-    @staticmethod
-    def _route_fidelity(route: GraphRouteBundle, oracle: OracleResult) -> float:
-        used = {item.node_id for item in oracle.supporting_evidence}
-        intended = {node.id for node in route.evidence_nodes}
-        required = 1 if route.attack_mode == AttackMode.SINGLE_FACT else 2
-        return min(1.0, len(used & intended) / required)
 
     def _route_relevance(self, question: str, route: GraphRouteBundle) -> float:
         vectors = self.embedder.embed(

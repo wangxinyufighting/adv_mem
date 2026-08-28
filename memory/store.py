@@ -155,7 +155,7 @@ class MemoryStore:
         )
         self.record_capability(stored)
         self.state.evidence_ledger[record.question_id] = evidence
-        self.link_question(node_ids, record.question_id)
+        self.bind_question(node_ids, record.question_id)
         if record.question_id not in self.state.success_pool:
             self.state.success_pool.append(record.question_id)
         if record.question_id in self.state.high_priority_buffer:
@@ -168,6 +168,7 @@ class MemoryStore:
     ) -> None:
         self.record_capability(replace(record, passed=False))
         self.state.evidence_ledger[record.question_id] = evidence
+        self.bind_question((), record.question_id)
         if record.question_id in self.state.success_pool:
             self.state.success_pool.remove(record.question_id)
         if record.question_id not in self.state.high_priority_buffer:
@@ -181,6 +182,18 @@ class MemoryStore:
                     node,
                     linked_questions=(*node.linked_questions, question_id),
                 )
+
+    def bind_question(self, node_ids: tuple[str, ...], question_id: str) -> None:
+        """Bind a capability to only its currently attributed support."""
+        for node_id, node in self.state.nodes.items():
+            if question_id in node.linked_questions and node_id not in node_ids:
+                self.state.nodes[node_id] = replace(
+                    node,
+                    linked_questions=tuple(
+                        item for item in node.linked_questions if item != question_id
+                    ),
+                )
+        self.link_question(node_ids, question_id)
 
     def advance_iteration(self) -> int:
         self.state.iteration += 1

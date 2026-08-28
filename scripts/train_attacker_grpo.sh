@@ -11,6 +11,7 @@ PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-8}
 PPO_MICRO_BATCH_SIZE=${PPO_MICRO_BATCH_SIZE:-4}
 ROLLOUT_N=${ROLLOUT_N:-8}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-1}
+MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-4096}
 CHECKPOINT_DIR=${CHECKPOINT_DIR:-${ROOT}/checkpoints/attacker}
 ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-${CHECKPOINT_DIR}/rollouts}
 VERL_HOME=${VERL_HOME:-${ROOT}/.verl-cu124-src}
@@ -25,7 +26,7 @@ cd "${VERL_HOME}"
     data.train_files="${TRAIN_FILE}" \
     data.val_files="${VAL_FILE}" \
     data.train_batch_size="${TRAIN_BATCH_SIZE}" \
-    data.max_prompt_length=4096 \
+    data.max_prompt_length="${MAX_PROMPT_LENGTH}" \
     data.max_response_length=256 \
     data.filter_overlong_prompts=True \
     data.truncation=error \

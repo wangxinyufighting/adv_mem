@@ -9,6 +9,11 @@ from attacker.attacker import Attacker
 from attacker.models import GraphRouteBundle
 from attacker.oracle import DeepSeekOracle
 from attacker.reward_judge import DeepSeekRewardJudge
+from attacker.validation import (
+    answer_is_leaked,
+    question_constraint_error,
+    route_fidelity,
+)
 from defender.memory_builder import MemoryBuilder
 from defender.reward import MemoryBuilderReward
 from defender.reward_judge import DeepSeekMemoryJudge
@@ -76,6 +81,7 @@ class QuestionCollector:
         judge: DeepSeekRewardJudge,
         value_threshold: float = 0.5,
         parametric_threshold: float = 0.8,
+        route_threshold: float = 0.8,
     ):
         self.attacker = attacker
         self.oracle = oracle
@@ -83,6 +89,7 @@ class QuestionCollector:
         self.judge = judge
         self.value_threshold = value_threshold
         self.parametric_threshold = parametric_threshold
+        self.route_threshold = route_threshold
 
     def collect(
         self,
@@ -104,12 +111,19 @@ class QuestionCollector:
             except (ValueError, KeyError, TypeError):
                 continue
             normalized = self.attacker.normalize_question(question)
-            if not question or normalized in prior_questions:
+            if (
+                question_constraint_error(question, route)
+                or normalized in prior_questions
+            ):
                 continue
 
             try:
                 oracle = self.oracle.evaluate(question, route)
                 if not oracle.valid:
+                    continue
+                if answer_is_leaked(question, oracle.answer):
+                    continue
+                if route_fidelity(route, oracle) < self.route_threshold:
                     continue
                 golden_answer = self.answer_agent.answer_sources(
                     question,
@@ -144,6 +158,8 @@ class QuestionCollector:
 
 
 def run(config: RunConfig, args: argparse.Namespace) -> None:
+    from transformers import AutoTokenizer
+
     state_path = config.work_dir / "run_state.json"
     reader = LongMemEvalGraphReader(args.graph, args.longmemeval, args.graph_version)
     state = RunState.load(state_path, args.model, reader.available_cases())
@@ -161,8 +177,14 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
     )
     runner = VerlRunner(
         ROOT,
-        VerlConfig(args.epochs, args.batch_size, args.gpus),
+        VerlConfig(
+            args.epochs,
+            args.batch_size,
+            args.gpus,
+            args.max_prompt_length,
+        ),
     )
+    tokenizer = AutoTokenizer.from_pretrained(state.attacker_model)
 
     for round_index in range(state.next_round, state.next_round + config.rounds):
         active_cases = {
@@ -180,6 +202,8 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             retriever,
             attacker,
             seed=args.seed + round_index,
+            tokenizer=tokenizer,
+            max_prompt_tokens=args.max_prompt_length,
         )
         attacker_records = tuple(
             record
@@ -195,7 +219,11 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             round_dir / "attacker_data",
             seed=args.seed + round_index,
         )
-        print(f"Round {round_index}: training Attacker on {attacker_data.train_size} prompts")
+        print(f"Round {round_index}: route samples {route_builder.stats}")
+        print(
+            f"Round {round_index}: training Attacker on "
+            f"{attacker_data.train_size} prompts {attacker_data.train_modes}"
+        )
         state.attacker_model = runner.train(
             "attacker",
             state.attacker_model,
@@ -460,6 +488,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidates-per-case", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--max-prompt-length", type=int, default=4096)
     parser.add_argument("--gpus", type=int, default=1)
     parser.add_argument("--policy-port", type=int, default=8002)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.8)

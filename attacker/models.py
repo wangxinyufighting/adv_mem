@@ -178,14 +178,29 @@ class GraphRouteBundle:
         )
 
     def to_attacker_context(self) -> dict[str, Any]:
-        """Expose structured memories but not raw source text."""
+        """Expose only route fields needed to generate the question."""
+        def evidence(node: RouteNode) -> dict[str, Any]:
+            return {
+                "id": node.id,
+                "status": node.status,
+                "key": node.key,
+                "memory": node.memory,
+                "tags": list(node.tags),
+            }
+
+        def connector(node: RouteNode) -> dict[str, Any]:
+            return {
+                "id": node.id,
+                "key": node.key,
+                "tags": list(node.tags),
+            }
+
         return {
             "route_id": self.route_id,
             "attack_mode": self.attack_mode.value,
-            "walk_node_ids": list(self.walk_node_ids),
             "walk_steps": [asdict(step) for step in self.walk_steps],
-            "evidence_nodes": [asdict(node) for node in self.evidence_nodes],
-            "connector_nodes": [asdict(node) for node in self.connector_nodes],
+            "evidence_nodes": [evidence(node) for node in self.evidence_nodes],
+            "connector_nodes": [connector(node) for node in self.connector_nodes],
         }
 
     def to_oracle_context(self) -> dict[str, Any]:
