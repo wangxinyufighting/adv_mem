@@ -23,7 +23,7 @@ Enforce attack_mode and mode_dimension:
 For a valid item, give a concise answer and the smallest supporting source-id set.
 Unsupported, ambiguous, answer-leaking, or mode-incompatible items are invalid.
 
-Return {"results":[...]} with one result per supplied item_id. Each result uses one of:
+Return JSON only as {"results":[...]} with one result per supplied item_id. Each result uses one of:
 {"item_id":0,"valid":true,"answer":"...","source_ids":["..."],"confidence":0.0}
 {"item_id":0,"valid":false,"reason":"...","confidence":0.0}
 Do not add fields or explanations."""
