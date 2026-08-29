@@ -14,10 +14,10 @@ def question_constraint_error(
     question: str,
     route: GraphRouteBundle,
 ) -> str | None:
-    """Return the first deterministic question-format violation."""
-    if not question or not question.endswith(("?", "？")):
+    """Return the first deterministic violation that makes a question unusable."""
+    if not question:
         return "question_invalid"
-    if question.count("?") + question.count("？") != 1:
+    if question.count("?") + question.count("？") > 1:
         return "multiple_questions"
     if _META_TERMS.search(question):
         return "metadata_leak"
@@ -30,6 +30,18 @@ def question_constraint_error(
     if any(identifier.casefold() in lowered for identifier in identifiers):
         return "id_leak"
     return None
+
+
+def has_terminal_question_mark(question: str) -> bool:
+    return question.endswith(("?", "？"))
+
+
+def ensure_question_mark(question: str) -> str:
+    return question if has_terminal_question_mark(question) else question.rstrip(".!。！") + "?"
+
+
+def normalize_question(question: str) -> str:
+    return " ".join(question.casefold().rstrip("?.!？。！").split())
 
 
 def answer_is_leaked(question: str, answer: str) -> bool:

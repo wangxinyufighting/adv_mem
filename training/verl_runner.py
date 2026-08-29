@@ -53,9 +53,9 @@ class VerlRunner:
             "MAX_PROMPT_LENGTH": str(self.config.max_prompt_length),
         }
         if role == "attacker":
-            env["ATTACKER_REWARD_TRACE"] = str(
-                checkpoints / "rollouts" / "reward_trace.jsonl"
-            )
+            trace = checkpoints / "rollouts" / "reward_trace.jsonl"
+            trace.unlink(missing_ok=True)
+            env["ATTACKER_REWARD_TRACE"] = str(trace)
         script = self.root / "scripts" / f"train_{role}_grpo.sh"
         subprocess.run([str(script)], cwd=self.root, env=env, check=True)
 

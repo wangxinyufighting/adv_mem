@@ -2,6 +2,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from attacker.answer_agent import is_insufficient_answer
 from attacker.attacker import Attacker
 from attacker.models import GraphRouteBundle, OracleResult
 from defender.memory_builder import MemoryBuilder
@@ -110,11 +111,12 @@ class MemoryTrainingFlow:
                 candidate.oracle.question,
                 memories,
             )
-            correctness = self.answer_judge.evaluate(
-                candidate.oracle,
-                candidate.golden_answer,
-                memory_answer,
-            ).memory_correctness
+            if not is_insufficient_answer(memory_answer):
+                correctness = self.answer_judge.evaluate(
+                    candidate.oracle,
+                    candidate.golden_answer,
+                    memory_answer,
+                ).memory_correctness
         capability = self._capability(candidate)
         evidence = self._evidence(candidate)
 

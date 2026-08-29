@@ -1,16 +1,17 @@
 import argparse
 import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from attacker.answer_agent import QwenAnswerAgent
+from attacker.answer_agent import QwenAnswerAgent, is_insufficient_answer
 from attacker.attacker import Attacker
 from attacker.models import GraphRouteBundle
 from attacker.oracle import DeepSeekOracle
 from attacker.reward_judge import DeepSeekRewardJudge
 from attacker.validation import (
     answer_is_leaked,
+    ensure_question_mark,
     question_constraint_error,
     route_fidelity,
 )
@@ -105,7 +106,7 @@ class QuestionCollector:
         candidates = []
         for route in routes:
             observation = self.attacker.observe(route, memory, retriever)
-            response = policy.generate(self.attacker.build_prompt(observation), 256)
+            response = policy.generate(self.attacker.build_prompt(observation), 128)
             try:
                 question = self.attacker.parse_question(response)
             except (ValueError, KeyError, TypeError):
@@ -129,6 +130,8 @@ class QuestionCollector:
                     question,
                     route.source_records,
                 )
+                if is_insufficient_answer(golden_answer):
+                    continue
                 parametric_answer = self.answer_agent.answer_question(question)
                 judged = self.judge.evaluate(
                     oracle,
@@ -141,10 +144,15 @@ class QuestionCollector:
             if (
                 judged.gold_correctness < 0.8
                 or judged.value < self.value_threshold
-                or judged.parametric_correctness >= self.parametric_threshold
+                or (
+                    not is_insufficient_answer(parametric_answer)
+                    and judged.parametric_correctness >= self.parametric_threshold
+                )
             ):
                 continue
 
+            question = ensure_question_mark(question)
+            oracle = replace(oracle, question=question)
             question_id = hashlib.sha256(
                 f"{route.route_id}\n{question}".encode()
             ).hexdigest()[:20]

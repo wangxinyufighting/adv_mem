@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from itertools import combinations
 from typing import Any
 
+from attacker.answer_agent import is_insufficient_answer
 from defender.memory_builder import MemoryBuilder
 from defender.models import ProtectedQuestion
 from memory.models import MemoryOperation, MemoryState
@@ -202,6 +203,8 @@ class CompactionAuditor:
             candidate.oracle.question,
             tuple(result.node for result in results),
         )
+        if is_insufficient_answer(answer):
+            return 0.0, ()
         judged = self.answer_judge.evaluate(
             candidate.oracle,
             candidate.golden_answer,

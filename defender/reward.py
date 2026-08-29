@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-from attacker.answer_agent import QwenAnswerAgent
+from attacker.answer_agent import QwenAnswerAgent, is_insufficient_answer
 from defender.memory_builder import (
     ActionConstraintError,
     ActionSchemaError,
@@ -116,16 +116,27 @@ class MemoryBuilderReward:
                 shrink=shrink,
             )
 
-        gain = max(0.0, judged.after_correctness - context.before_correctness)
+        after_correctness = (
+            0.0 if is_insufficient_answer(after_answer) else judged.after_correctness
+        )
+        retention_scores = tuple(
+            0.0 if is_insufficient_answer(item.answer) else score
+            for item, score in zip(
+                protected_answers,
+                judged.retention_correctness,
+                strict=True,
+            )
+        )
+        gain = max(0.0, after_correctness - context.before_correctness)
         edit_quality = (judged.action_quality + judged.memory_quality) / 2
-        retention_min = min(judged.retention_correctness, default=1.0)
-        answer_pass = judged.after_correctness >= self.config.answer_threshold
+        retention_min = min(retention_scores, default=1.0)
+        answer_pass = after_correctness >= self.config.answer_threshold
         retention_pass = retention_min >= self.config.retention_threshold
         failures = [
             value / threshold - 1.0
             for value, threshold in (
                 (judged.groundedness, self.config.grounding_threshold),
-                (judged.after_correctness, self.config.answer_threshold),
+                (after_correctness, self.config.answer_threshold),
                 (judged.action_quality, self.config.quality_threshold),
                 (judged.memory_quality, self.config.quality_threshold),
                 (retention_min, self.config.retention_threshold),
@@ -151,7 +162,7 @@ class MemoryBuilderReward:
             score,
             schema_valid=1.0,
             action_valid=1.0,
-            after_correctness=judged.after_correctness,
+            after_correctness=after_correctness,
             answer_pass=float(answer_pass),
             groundedness=judged.groundedness,
             action_quality=judged.action_quality,

@@ -126,6 +126,7 @@ class GraphRouteBundle:
     route_signature: str
     sampling_seed: int | None
     sampling_attempt: int
+    mode_dimension: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -142,6 +143,7 @@ class GraphRouteBundle:
             "route_signature": self.route_signature,
             "sampling_seed": self.sampling_seed,
             "sampling_attempt": self.sampling_attempt,
+            "mode_dimension": self.mode_dimension,
         }
 
     @classmethod
@@ -175,39 +177,24 @@ class GraphRouteBundle:
             route_signature=payload["route_signature"],
             sampling_seed=payload["sampling_seed"],
             sampling_attempt=payload["sampling_attempt"],
+            mode_dimension=payload.get("mode_dimension"),
         )
 
     def to_attacker_context(self) -> dict[str, Any]:
         """Expose only route fields needed to generate the question."""
-        def evidence(node: RouteNode) -> dict[str, Any]:
-            return {
-                "id": node.id,
-                "status": node.status,
-                "key": node.key,
-                "memory": node.memory,
-                "tags": list(node.tags),
-            }
-
-        def connector(node: RouteNode) -> dict[str, Any]:
-            return {
-                "id": node.id,
-                "key": node.key,
-                "tags": list(node.tags),
-            }
-
-        return {
-            "route_id": self.route_id,
-            "attack_mode": self.attack_mode.value,
-            "walk_steps": [asdict(step) for step in self.walk_steps],
-            "evidence_nodes": [evidence(node) for node in self.evidence_nodes],
-            "connector_nodes": [connector(node) for node in self.connector_nodes],
+        context = {
+            "mode": self.attack_mode.value,
+            "evidence": [node.memory for node in self.evidence_nodes],
         }
+        if self.mode_dimension:
+            context["dimension"] = self.mode_dimension
+        return context
 
     def to_oracle_context(self) -> dict[str, Any]:
         """Expose only raw evidence used by the frozen Answer Agent."""
         return {
-            "route_id": self.route_id,
             "attack_mode": self.attack_mode.value,
+            "mode_dimension": self.mode_dimension,
             "source_records": [asdict(source) for source in self.source_records],
         }
 
@@ -260,15 +247,7 @@ class AttackerObservation:
     def to_dict(self) -> dict[str, Any]:
         return {
             "route": self.route.to_attacker_context(),
-            "memory_neighborhood": [
-                {
-                    "id": node.id,
-                    "content": node.content,
-                    "tags": list(node.tags),
-                    "time_span": node.time_span,
-                }
-                for node in self.memory_neighborhood
-            ],
+            "known_memory": [node.content for node in self.memory_neighborhood],
         }
 
 

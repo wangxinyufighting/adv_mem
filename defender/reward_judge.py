@@ -5,6 +5,7 @@ from typing import Any
 
 from openai import OpenAI
 
+from attacker.answer_agent import is_insufficient_answer
 from attacker.models import OracleResult, SupportingEvidence
 from memory.models import CapabilityRecord, MemoryEditAction, MemoryNode
 from utils.json_output import retry_json_object
@@ -168,6 +169,16 @@ class DeepSeekMemoryJudge:
                 raise ValueError("Judge scores must be between 0 and 1")
             if len(retention_scores) != len(protected_answers):
                 raise ValueError("Judge returned the wrong number of retention scores")
+            if is_insufficient_answer(after_answer):
+                scores = (0.0, *scores[1:])
+            retention_scores = tuple(
+                0.0 if is_insufficient_answer(item.answer) else score
+                for item, score in zip(
+                    protected_answers,
+                    retention_scores,
+                    strict=True,
+                )
+            )
             return MemoryJudgeResult(*scores, retention_scores)
 
         return retry_json_object(

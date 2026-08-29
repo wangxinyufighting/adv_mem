@@ -5,6 +5,7 @@ from typing import Any
 
 from openai import OpenAI
 
+from attacker.answer_agent import is_insufficient_answer
 from attacker.models import OracleResult
 from utils.json_output import retry_json_object
 
@@ -107,6 +108,13 @@ class DeepSeekRewardJudge:
                 name: (value if name == "value" else equivalence)[result[name]]
                 for name in required
             }
+            for name, answer in (
+                ("gold_correctness", golden_answer),
+                ("memory_correctness", memory_answer),
+                ("parametric_correctness", parametric_answer),
+            ):
+                if is_insufficient_answer(answer):
+                    scores[name] = 0.0
             return RewardJudgeResult(
                 gold_correctness=scores["gold_correctness"],
                 memory_correctness=scores["memory_correctness"],

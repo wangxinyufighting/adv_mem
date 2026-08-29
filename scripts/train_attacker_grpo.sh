@@ -12,6 +12,7 @@ PPO_MICRO_BATCH_SIZE=${PPO_MICRO_BATCH_SIZE:-4}
 ROLLOUT_N=${ROLLOUT_N:-8}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-1}
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-4096}
+MAX_RESPONSE_LENGTH=${ATTACKER_MAX_RESPONSE_LENGTH:-128}
 CHECKPOINT_DIR=${CHECKPOINT_DIR:-${ROOT}/checkpoints/attacker}
 ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-${CHECKPOINT_DIR}/rollouts}
 VERL_HOME=${VERL_HOME:-${ROOT}/.verl-cu124-src}
@@ -27,7 +28,7 @@ cd "${VERL_HOME}"
     data.val_files="${VAL_FILE}" \
     data.train_batch_size="${TRAIN_BATCH_SIZE}" \
     data.max_prompt_length="${MAX_PROMPT_LENGTH}" \
-    data.max_response_length=256 \
+    data.max_response_length="${MAX_RESPONSE_LENGTH}" \
     data.filter_overlong_prompts=True \
     data.truncation=error \
     actor_rollout_ref.model.path="${MODEL_PATH}" \
@@ -50,7 +51,8 @@ cd "${VERL_HOME}"
     +actor_rollout_ref.ref.fsdp_config.model_dtype=bf16 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     custom_reward_function.path="${ROOT}/attacker/verl_reward.py" \
-    custom_reward_function.name=compute_score \
+    custom_reward_function.name=compute_score_batch \
+    reward_model.reward_manager=batch \
     trainer.critic_warmup=0 \
     trainer.logger='["console"]' \
     trainer.project_name=adv_mem \

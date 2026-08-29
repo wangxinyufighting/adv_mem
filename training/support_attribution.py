@@ -1,5 +1,6 @@
 from typing import Any
 
+from attacker.answer_agent import is_insufficient_answer
 from attacker.models import OracleResult
 from memory.models import MemoryNode
 from utils.json_output import StructuredOutputError
@@ -26,6 +27,8 @@ class SupportAttributor:
             if not trial:
                 continue
             answer = self.answer_agent.answer_memories(oracle.question, trial)
+            if is_insufficient_answer(answer):
+                continue
             try:
                 correctness = self.answer_judge.evaluate(
                     oracle,

@@ -30,7 +30,6 @@ def write_verl_dataset(
     output_dir: str | Path,
     val_fraction: float = 0.1,
     seed: int = 0,
-    minimum_train_size: int = 8,
 ) -> DatasetFiles:
     """Split verl prompt records and materialize the two Parquet files."""
     items = list(records)
@@ -40,14 +39,12 @@ def write_verl_dataset(
     rng = random.Random(seed)
     if all(_attack_mode(item) for item in items):
         train, val = _stratified_split(items, val_fraction, rng)
-        train = _balance_modes(train, rng)
+        val = val or train[:1]
     else:
         rng.shuffle(items)
         val_size = max(1, round(len(items) * val_fraction)) if len(items) > 1 else 1
         val = items[:val_size]
         train = items[val_size:] or items
-    train = _repeat_to_size(train, minimum_train_size)
-
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     train_path = directory / "train.parquet"
@@ -101,16 +98,19 @@ class AttackerDatasetBuilder:
             self.reader.version,
         )
         routes = []
-        modes = []
-        for mode in AttackMode:
-            try:
-                routes.append(router.route(graph, mode))
-                modes.append(mode)
-            except NoRouteFoundError:
-                pass
         while len(routes) < count:
-            routes.append(router.route(graph, modes[len(routes) % len(modes)]))
-        return tuple(routes[:count])
+            added = False
+            for mode in AttackMode:
+                try:
+                    routes.append(router.route(graph, mode))
+                    added = True
+                except NoRouteFoundError:
+                    pass
+                if len(routes) == count:
+                    break
+            if not added:
+                break
+        return tuple(routes)
 
     def records(
         self,
@@ -119,13 +119,9 @@ class AttackerDatasetBuilder:
         count: int,
     ) -> tuple[dict[str, Any], ...]:
         buckets = {mode: [] for mode in AttackMode}
-        seen = set()
         for route in self.routes(case_index, count * len(AttackMode)):
             mode = route.attack_mode.value
             self.stats["sampled"][mode] += 1
-            if route.route_signature in seen:
-                continue
-            seen.add(route.route_signature)
             self.stats["unique"][mode] += 1
             buckets[route.attack_mode].append(route)
 
@@ -183,10 +179,6 @@ def memory_builder_records(
     )
 
 
-def _repeat_to_size(items: list[dict[str, Any]], size: int) -> list[dict[str, Any]]:
-    return [items[index % len(items)] for index in range(max(size, len(items)))]
-
-
 def _attack_mode(record: dict[str, Any]) -> str | None:
     route = record["extra_info"].get("route")
     return route.get("attack_mode") if route else None
@@ -214,28 +206,10 @@ def _stratified_split(
         rng.shuffle(bucket)
         val_size = min(max(1, round(len(bucket) * val_fraction)), len(bucket) - 1)
         if len(bucket) == 1:
-            val.extend(bucket)
             train.extend(bucket)
         else:
             val.extend(bucket[:val_size])
             train.extend(bucket[val_size:])
+    rng.shuffle(train)
+    rng.shuffle(val)
     return train, val
-
-
-def _balance_modes(
-    items: list[dict[str, Any]],
-    rng: random.Random,
-) -> list[dict[str, Any]]:
-    buckets = {
-        mode: [item for item in items if _attack_mode(item) == mode.value]
-        for mode in AttackMode
-    }
-    nonempty = [bucket for bucket in buckets.values() if bucket]
-    target = (len(items) + len(nonempty) - 1) // len(nonempty)
-    balanced = [
-        bucket[index % len(bucket)]
-        for bucket in nonempty
-        for index in range(target)
-    ]
-    rng.shuffle(balanced)
-    return balanced

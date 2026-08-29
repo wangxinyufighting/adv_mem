@@ -32,6 +32,11 @@ or prior assistant responses. If the question requires such information, return
 exactly INSUFFICIENT_INFORMATION. Otherwise return only a concise final answer."""
 
 
+def is_insufficient_answer(answer: str | None) -> bool:
+    """Recognize the fixed abstention token without asking an LLM to judge it."""
+    return (answer or "").strip().rstrip(".!").upper() == "INSUFFICIENT_INFORMATION"
+
+
 class QwenAnswerAgent:
     """Frozen Qwen3-0.6B served through an OpenAI-compatible endpoint."""
 

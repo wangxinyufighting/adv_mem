@@ -4,9 +4,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, cast
 
-from attacker.answer_agent import QwenAnswerAgent
+from attacker.answer_agent import QwenAnswerAgent, is_insufficient_answer
+from attacker.attacker import Attacker
 from attacker.models import (
     AttackerRewardContext,
     GraphRouteBundle,
@@ -16,14 +17,12 @@ from attacker.oracle import DeepSeekOracle
 from attacker.reward_judge import DeepSeekRewardJudge
 from attacker.validation import (
     answer_is_leaked,
+    has_terminal_question_mark,
+    normalize_question,
     question_constraint_error,
     route_fidelity,
 )
-from utils.json_output import (
-    StructuredOutputError,
-    is_clean_json_object,
-    parse_json_object,
-)
+from utils.json_output import StructuredOutputError
 from utils.memory_retrieval import HybridMemoryRetriever
 
 
@@ -42,6 +41,15 @@ class AttackerRewardConfig:
     value_weight: float = 0.25
     novelty_weight: float = 0.2
     route_weight: float = 0.15
+    question_mark_penalty: float = 0.05
+
+
+@dataclass(frozen=True)
+class _PreparedAttack:
+    question: str
+    context: AttackerRewardContext
+    trace: dict[str, Any]
+    question_mark: bool
 
 
 class AttackerReward:
@@ -85,43 +93,84 @@ class AttackerReward:
         response: str,
         context: AttackerRewardContext,
     ) -> dict[str, float]:
+        prepared = self._prepare(response, context)
+        if isinstance(prepared, dict):
+            return prepared
+        try:
+            oracle = self.oracle.evaluate(prepared.question, context.route)
+        except StructuredOutputError as error:
+            return self._oracle_unavailable(prepared, error)
+        return self._score(prepared, oracle)
+
+    def evaluate_batch(
+        self,
+        responses: list[str],
+        contexts: list[AttackerRewardContext],
+        group_ids: list[str],
+    ) -> list[dict[str, float]]:
+        results: list[dict[str, float] | None] = [None] * len(responses)
+        groups: dict[tuple[str, str], list[tuple[int, _PreparedAttack]]] = {}
+        for index, (response, context, group_id) in enumerate(
+            zip(responses, contexts, group_ids, strict=True)
+        ):
+            prepared = self._prepare(response, context)
+            if isinstance(prepared, dict):
+                results[index] = prepared
+                continue
+            key = (str(group_id), context.route.route_id)
+            groups.setdefault(key, []).append((index, prepared))
+
+        for items in groups.values():
+            route = items[0][1].context.route
+            try:
+                oracle_results = self.oracle.evaluate_many(
+                    route,
+                    tuple((index, item.question) for index, item in items),
+                )
+            except StructuredOutputError as error:
+                for index, item in items:
+                    results[index] = self._oracle_unavailable(item, error)
+                continue
+            for index, item in items:
+                results[index] = self._score(item, oracle_results[index])
+        return cast(list[dict[str, float]], results)
+
+    def _prepare(
+        self,
+        response: str,
+        context: AttackerRewardContext,
+    ) -> _PreparedAttack | dict[str, float]:
         trace = {
             "route_id": context.route.route_id,
             "attack_mode": context.route.attack_mode.value,
             "response": response,
         }
         try:
-            payload = parse_json_object(response, ("question",))
+            question = Attacker.parse_question(response)
         except ValueError:
             return self._finish(
                 self._result(-1.0),
                 trace,
                 stage="schema_invalid",
             )
-        if (
-            set(payload) != {"question"}
-            or not isinstance(payload["question"], str)
-            or not is_clean_json_object(response)
-        ):
-            return self._finish(
-                self._result(-1.0),
-                trace,
-                stage="schema_invalid",
-            )
-
-        question = payload["question"].strip()
+        question_mark = has_terminal_question_mark(question)
         trace["question"] = question
+        trace["question_mark"] = question_mark
         constraint_error = question_constraint_error(question, context.route)
         if constraint_error:
             return self._finish(
-                self._result(-0.9, schema_valid=1.0),
+                self._result(
+                    -0.9,
+                    schema_valid=1.0,
+                    question_mark=float(question_mark),
+                ),
                 trace,
                 stage=constraint_error,
             )
 
-        normalized = " ".join(question.casefold().split())
+        normalized = normalize_question(question)
         if normalized in {
-            " ".join(item.question.casefold().split())
+            normalize_question(item.question)
             for item in context.prior_questions
         }:
             return self._finish(
@@ -129,33 +178,46 @@ class AttackerReward:
                     -1.0,
                     schema_valid=1.0,
                     question_valid=1.0,
+                    question_mark=float(question_mark),
                 ),
                 trace,
                 stage="duplicate",
             )
+        return _PreparedAttack(question, context, trace, question_mark)
 
-        try:
-            oracle = self.oracle.evaluate(question, context.route)
-        except StructuredOutputError as error:
-            return self._finish(
-                self._result(
-                    0.0,
-                    reward_available=0.0,
-                    schema_valid=1.0,
-                    question_valid=1.0,
-                ),
-                trace,
-                stage="oracle_unavailable",
-                error=str(error),
-            )
+    def _oracle_unavailable(
+        self,
+        prepared: _PreparedAttack,
+        error: StructuredOutputError,
+    ) -> dict[str, float]:
+        return self._finish(
+            self._result(
+                0.0,
+                reward_available=0.0,
+                **self._base_metrics(prepared),
+            ),
+            prepared.trace,
+            stage="oracle_unavailable",
+            error=str(error),
+        )
+
+    def _score(
+        self,
+        prepared: _PreparedAttack,
+        oracle: OracleResult,
+    ) -> dict[str, float]:
+        question = prepared.question
+        context = prepared.context
+        trace = prepared.trace
+        base_metrics = self._base_metrics(prepared)
         if not oracle.valid:
             relevance = self._route_relevance(question, context.route)
-            return self._finish(
+            return self._complete(
                 self._result(
                     -0.8 + 0.4 * relevance,
-                    schema_valid=1.0,
-                    question_valid=1.0,
+                    **base_metrics,
                 ),
+                prepared,
                 trace,
                 stage="oracle_invalid",
                 oracle_invalid_reason=oracle.invalid_reason,
@@ -172,21 +234,22 @@ class AttackerReward:
         )
         fidelity = route_fidelity(context.route, oracle)
         hard_metrics = {
-            "schema_valid": 1.0,
-            "question_valid": 1.0,
+            **base_metrics,
             "oracle_valid": 1.0,
             "route_fidelity": fidelity,
             "route_pass": float(fidelity >= self.config.route_threshold),
         }
         if answer_is_leaked(question, oracle.answer):
-            return self._finish(
+            return self._complete(
                 self._result(-1.0, **hard_metrics),
+                prepared,
                 trace,
                 stage="answer_leak",
             )
         if fidelity < self.config.route_threshold:
-            return self._finish(
+            return self._complete(
                 self._result(-1.0, **hard_metrics),
+                prepared,
                 trace,
                 stage="route_unfaithful",
             )
@@ -196,6 +259,14 @@ class AttackerReward:
             question,
             context.route.source_records,
         )
+        trace["golden_answer"] = golden_answer
+        if is_insufficient_answer(golden_answer):
+            return self._complete(
+                self._result(-1.0, **hard_metrics),
+                prepared,
+                trace,
+                stage="gold_insufficient",
+            )
         parametric_answer = self.answer_agent.answer_question(question)
         # The same frozen agent now answers from fixed retrieval over M_t.
         memory_results = self.retriever.retrieve(
@@ -207,6 +278,12 @@ class AttackerReward:
             question,
             tuple(result.node for result in memory_results),
         )
+        trace.update(
+            {
+                "parametric_answer": parametric_answer,
+                "memory_answer": memory_answer,
+            }
+        )
         try:
             judged = self.judge.evaluate(
                 oracle,
@@ -215,43 +292,45 @@ class AttackerReward:
                 parametric_answer,
             )
         except StructuredOutputError as error:
-            return self._finish(
+            return self._complete(
                 self._result(
                     0.0,
                     reward_available=0.0,
                     **hard_metrics,
                 ),
+                prepared,
                 trace,
                 stage="judge_unavailable",
                 error=str(error),
             )
-        trace.update(
-            {
-                "golden_answer": golden_answer,
-                "parametric_answer": parametric_answer,
-                "memory_answer": memory_answer,
-            }
-        )
 
-        uncovered = 1.0 - judged.memory_correctness
-        novelty = self._novelty(question, oracle, context)
-        gold_pass = judged.gold_correctness >= self.config.gold_threshold
-        parametric_pass = (
-            judged.parametric_correctness < self.config.parametric_threshold
+        gold_correctness = (
+            0.0 if is_insufficient_answer(golden_answer) else judged.gold_correctness
         )
-        uncovered_pass = judged.memory_correctness < self.config.memory_threshold
+        memory_correctness = (
+            0.0 if is_insufficient_answer(memory_answer) else judged.memory_correctness
+        )
+        parametric_correctness = (
+            0.0
+            if is_insufficient_answer(parametric_answer)
+            else judged.parametric_correctness
+        )
+        uncovered = 1.0 - memory_correctness
+        novelty = self._novelty(question, oracle, context)
+        gold_pass = gold_correctness >= self.config.gold_threshold
+        parametric_pass = parametric_correctness < self.config.parametric_threshold
+        uncovered_pass = memory_correctness < self.config.memory_threshold
         value_pass = judged.value >= self.config.value_threshold
         novelty_pass = novelty >= self.config.novelty_threshold
         metrics = {
-            "schema_valid": 1.0,
-            "question_valid": 1.0,
+            **base_metrics,
             "oracle_valid": 1.0,
-            "gold_correctness": judged.gold_correctness,
+            "gold_correctness": gold_correctness,
             "gold_pass": float(gold_pass),
-            "memory_correctness": judged.memory_correctness,
+            "memory_correctness": memory_correctness,
             "uncovered": uncovered,
             "uncovered_pass": float(uncovered_pass),
-            "parametric_correctness": judged.parametric_correctness,
+            "parametric_correctness": parametric_correctness,
             "parametric_pass": float(parametric_pass),
             "value": judged.value,
             "value_pass": float(value_pass),
@@ -265,13 +344,13 @@ class AttackerReward:
             failures.append(
                 (
                     "gold_invalid",
-                    judged.gold_correctness / self.config.gold_threshold - 1.0,
+                    gold_correctness / self.config.gold_threshold - 1.0,
                 )
             )
         if not parametric_pass:
-            failures.append(("parametric_answerable", -judged.parametric_correctness))
+            failures.append(("parametric_answerable", -parametric_correctness))
         if not uncovered_pass:
-            failures.append(("memory_answerable", -judged.memory_correctness))
+            failures.append(("memory_answerable", -memory_correctness))
         if not value_pass:
             failures.append(
                 ("low_value", judged.value / self.config.value_threshold - 1.0)
@@ -282,7 +361,12 @@ class AttackerReward:
             )
         if failures:
             stage, score = min(failures, key=lambda item: item[1])
-            return self._finish(self._result(score, **metrics), trace, stage=stage)
+            return self._complete(
+                self._result(score, **metrics),
+                prepared,
+                trace,
+                stage=stage,
+            )
 
         score = min(
             1.0,
@@ -291,11 +375,34 @@ class AttackerReward:
             + self.config.novelty_weight * novelty
             + self.config.route_weight * fidelity,
         )
-        return self._finish(
+        return self._complete(
             self._result(score, attack_valid=1.0, **metrics),
+            prepared,
             trace,
             stage="scored",
         )
+
+    @staticmethod
+    def _base_metrics(prepared: _PreparedAttack) -> dict[str, float]:
+        return {
+            "schema_valid": 1.0,
+            "question_valid": 1.0,
+            "question_mark": float(prepared.question_mark),
+        }
+
+    def _complete(
+        self,
+        result: dict[str, float],
+        prepared: _PreparedAttack,
+        trace: dict[str, Any],
+        **details: Any,
+    ) -> dict[str, float]:
+        if not prepared.question_mark and result["reward_available"]:
+            result["score"] = max(
+                -1.0,
+                result["score"] - self.config.question_mark_penalty,
+            )
+        return self._finish(result, trace, **details)
 
     def _finish(
         self,
@@ -356,6 +463,7 @@ class AttackerReward:
             "reward_available": 1.0,
             "schema_valid": 0.0,
             "question_valid": 0.0,
+            "question_mark": 0.0,
             "oracle_valid": 0.0,
             "gold_correctness": 0.0,
             "gold_pass": 0.0,

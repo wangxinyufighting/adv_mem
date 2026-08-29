@@ -64,3 +64,8 @@ def is_clean_json_object(text: str) -> bool:
         return isinstance(json.loads(text), dict)
     except json.JSONDecodeError:
         return False
+
+
+def clean_model_output(text: str) -> str:
+    """Remove Qwen's empty thinking marker from a plain-text response."""
+    return _EMPTY_THINK.sub("", text, count=1).strip()
