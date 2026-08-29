@@ -54,7 +54,7 @@ cd "${VERL_HOME}"
     custom_reward_function.name=compute_score_batch \
     reward_model.reward_manager=batch \
     trainer.critic_warmup=0 \
-    trainer.logger='["console"]' \
+    trainer.logger='["console", "swanlab"]' \
     trainer.project_name=adv_mem \
     trainer.experiment_name=attacker_qwen3_0.6b_grpo \
     trainer.default_local_dir="${CHECKPOINT_DIR}" \

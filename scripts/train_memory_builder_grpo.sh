@@ -51,7 +51,7 @@ cd "${VERL_HOME}"
     custom_reward_function.path="${ROOT}/defender/verl_reward.py" \
     custom_reward_function.name=compute_score \
     trainer.critic_warmup=0 \
-    trainer.logger='["console"]' \
+    trainer.logger='["console", "swanlab"]' \
     trainer.project_name=adv_mem \
     trainer.experiment_name=memory_builder_qwen3_0.6b_grpo \
     trainer.default_local_dir="${CHECKPOINT_DIR}" \
