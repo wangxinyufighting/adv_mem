@@ -38,7 +38,8 @@ def retry_json_object(
 ) -> T:
     """Request, extract, and validate one JSON object with bounded retries."""
     last_error = None
-    for _ in range(attempts):
+    for attempt in range(1, attempts + 1):
+        content = None
         try:
             response = request()
             content = response.choices[0].message.content or ""
@@ -51,9 +52,15 @@ def retry_json_object(
             TypeError,
             ValueError,
         ) as error:
-            last_error = error
+            last_error = (
+                error
+                if content is None
+                else ValueError(
+                    f"attempt {attempt}: {error}; response={content[:500]!r}"
+                )
+            )
     raise StructuredOutputError(
-        f"LLM returned unusable JSON after {attempts} attempts"
+        f"LLM returned unusable JSON after {attempts} attempts: {last_error}"
     ) from last_error
 
 

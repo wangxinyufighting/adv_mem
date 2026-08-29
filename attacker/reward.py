@@ -110,6 +110,7 @@ class AttackerReward:
     ) -> list[dict[str, float]]:
         results: list[dict[str, float] | None] = [None] * len(responses)
         groups: dict[tuple[str, str], list[tuple[int, _PreparedAttack]]] = {}
+        batch_errors = []
         for index, (response, context, group_id) in enumerate(
             zip(responses, contexts, group_ids, strict=True)
         ):
@@ -125,15 +126,66 @@ class AttackerReward:
             try:
                 oracle_results = self.oracle.evaluate_many(
                     route,
-                    tuple((index, item.question) for index, item in items),
+                    tuple(
+                        (item_id, item.question)
+                        for item_id, (_, item) in enumerate(items)
+                    ),
                 )
-            except StructuredOutputError as error:
+            except StructuredOutputError as batch_error:
+                batch_errors.append(str(batch_error))
                 for index, item in items:
-                    results[index] = self._oracle_unavailable(item, error)
+                    item.trace["oracle_batch_error"] = str(batch_error)
+                    try:
+                        oracle = self.oracle.evaluate(item.question, route)
+                    except StructuredOutputError as error:
+                        results[index] = self._oracle_unavailable(item, error)
+                    else:
+                        results[index] = self._score(item, oracle)
                 continue
-            for index, item in items:
-                results[index] = self._score(item, oracle_results[index])
-        return cast(list[dict[str, float]], results)
+            for item_id, (index, item) in enumerate(items):
+                results[index] = self._score(item, oracle_results[item_id])
+        scored = cast(list[dict[str, float]], results)
+        self._log_batch(scored, batch_errors)
+        return scored
+
+    @staticmethod
+    def _log_batch(
+        results: list[dict[str, float]],
+        batch_errors: list[str],
+    ) -> None:
+        def count(key: str) -> int:
+            return sum(result[key] > 0 for result in results)
+
+        unavailable = [
+            result for result in results if not result["reward_available"]
+        ]
+        fields = {
+            "samples": len(results),
+            "positive": sum(result["score"] > 0 for result in results),
+            "neutral": sum(result["score"] == 0 for result in results),
+            "negative": sum(result["score"] < 0 for result in results),
+            "oracle_unavailable": sum(
+                not result["oracle_valid"] for result in unavailable
+            ),
+            "judge_unavailable": sum(
+                bool(result["oracle_valid"]) for result in unavailable
+            ),
+            "schema_valid": count("schema_valid"),
+            "question_valid": count("question_valid"),
+            "oracle_valid": count("oracle_valid"),
+            "route_pass": count("route_pass"),
+            "gold_pass": count("gold_pass"),
+            "parametric_pass": count("parametric_pass"),
+            "uncovered_pass": count("uncovered_pass"),
+            "value_pass": count("value_pass"),
+            "novelty_pass": count("novelty_pass"),
+            "attack_valid": count("attack_valid"),
+            "batch_fallbacks": len(batch_errors),
+        }
+        summary = " ".join(f"{key}={value}" for key, value in fields.items())
+        if batch_errors:
+            summary += f" first_batch_error={batch_errors[0][:500]!r}"
+        print(f"Attacker Reward: {summary}", flush=True)
 
     def _prepare(
         self,
