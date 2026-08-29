@@ -146,6 +146,11 @@ ANSWER_LOG=${LOG_DIR}/answer_agent.log
 RERANKER_LOG=${LOG_DIR}/reranker.log
 ANSWER_PID=""
 RERANKER_PID=""
+SHARED_SERVICE_GPU=0
+if [[ ${START_ANSWER_AGENT} == 1 && ${START_RERANKER} == 1 && \
+      ${ANSWER_AGENT_GPU} == "${RERANKER_GPU}" ]]; then
+    SHARED_SERVICE_GPU=1
+fi
 
 if [[ ${START_ANSWER_AGENT} == 1 ]]; then
     echo "Starting Answer Agent on GPU ${ANSWER_AGENT_GPU}..."
@@ -154,6 +159,15 @@ if [[ ${START_ANSWER_AGENT} == 1 ]]; then
         >"${ANSWER_LOG}" 2>&1 &
     ANSWER_PID=$!
     PIDS+=("${ANSWER_PID}")
+fi
+
+# Avoid two vLLM processes measuring and allocating the same GPU concurrently.
+if [[ ${SHARED_SERVICE_GPU} == 1 ]]; then
+    wait_for_service \
+        "Answer Agent" \
+        "${ANSWER_AGENT_API_BASE%/}/models" \
+        "${ANSWER_PID}" \
+        "${ANSWER_LOG}"
 fi
 
 if [[ ${START_RERANKER} == 1 ]]; then
@@ -165,11 +179,13 @@ if [[ ${START_RERANKER} == 1 ]]; then
     PIDS+=("${RERANKER_PID}")
 fi
 
-wait_for_service \
-    "Answer Agent" \
-    "${ANSWER_AGENT_API_BASE%/}/models" \
-    "${ANSWER_PID}" \
-    "${ANSWER_LOG}"
+if [[ ${SHARED_SERVICE_GPU} == 0 ]]; then
+    wait_for_service \
+        "Answer Agent" \
+        "${ANSWER_AGENT_API_BASE%/}/models" \
+        "${ANSWER_PID}" \
+        "${ANSWER_LOG}"
+fi
 BGE_HEALTH_URL=${BGE_RERANKER_HEALTH_URL:-${BGE_RERANKER_URL%/v1/rerank}/v1/models}
 wait_for_service \
     "BGE Reranker" \
