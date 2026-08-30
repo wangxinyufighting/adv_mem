@@ -10,34 +10,25 @@ from attacker.models import OracleResult
 from utils.json_output import retry_json_object
 
 
-SYSTEM_PROMPT = """Judge only semantic answer equivalence and long-term-memory value.
-All format, grounding, route, novelty, and answer-leak constraints were checked by
-code and must not affect this judgment.
+SYSTEM_PROMPT = """Judge only semantic answer equivalence. All question validity,
+grounding, route, novelty, and answer-leak constraints are handled elsewhere.
 
 For each candidate answer, compare it independently with canonical_answer:
 - correct: all essential information is semantically correct with no contradiction;
 - partial: some essential information is correct but incomplete or underspecified;
 - incorrect: wrong, contradictory, irrelevant, or unable to answer.
-Treat NOT_PROVIDED as incorrect.
-
-Judge question value independently from the candidate answers:
-- high: meaningfully tests integration, comparison, temporal change, state updates,
-  personalized application, or recall of a substantive prior response;
-- medium: clearly tests one specific conversational fact, preference, decision,
-  experience, name, number, or response;
-- low: vague, generic, incidental, mechanically combined, or weakly diagnostic.
-
-Complexity alone does not create value. Return exactly one JSON object with no
-additional fields:
-{"gold_correctness":"correct","memory_correctness":"incorrect","parametric_correctness":"incorrect","value":"medium"}"""
+Treat INSUFFICIENT_INFORMATION as incorrect. Return exactly one JSON object. Its
+keys must exactly match the supplied candidate_answers keys and each value must be
+correct, partial, or incorrect."""
 
 
 @dataclass(frozen=True)
 class RewardJudgeResult:
     gold_correctness: float
     memory_correctness: float
-    value: float
     parametric_correctness: float = 0.0
+    # Kept for readers of old traces; the learned selector does not use it.
+    value: float = 0.0
 
 
 class DeepSeekRewardJudge:
@@ -65,16 +56,21 @@ class DeepSeekRewardJudge:
     def evaluate(
         self,
         oracle: OracleResult,
-        golden_answer: str,
-        memory_answer: str,
+        golden_answer: str | None,
+        memory_answer: str | None,
         parametric_answer: str | None = None,
     ) -> RewardJudgeResult:
+        candidate_answers = {}
+        if golden_answer is not None:
+            candidate_answers["gold_correctness"] = golden_answer
+        if memory_answer is not None:
+            candidate_answers["memory_correctness"] = memory_answer
+        if parametric_answer is not None:
+            candidate_answers["parametric_correctness"] = parametric_answer
         payload = {
             "question": oracle.question,
             "canonical_answer": oracle.answer,
-            "golden_answer": golden_answer,
-            "memory_answer": memory_answer,
-            "parametric_answer": parametric_answer or "NOT_PROVIDED",
+            "candidate_answers": candidate_answers,
         }
 
         def request():
@@ -92,33 +88,22 @@ class DeepSeekRewardJudge:
                 max_tokens=self.max_tokens,
             )
 
-        required = [
-            "gold_correctness",
-            "memory_correctness",
-            "parametric_correctness",
-            "value",
-        ]
+        required = list(candidate_answers)
 
         def transform(result: dict[str, Any]) -> RewardJudgeResult:
             if set(result) != set(required):
                 raise ValueError("Judge returned an invalid schema")
             equivalence = {"incorrect": 0.0, "partial": 0.5, "correct": 1.0}
-            value = {"low": 0.0, "medium": 0.5, "high": 1.0}
             scores = {
-                name: (value if name == "value" else equivalence)[result[name]]
+                name: equivalence[result[name]]
                 for name in required
             }
-            for name, answer in (
-                ("gold_correctness", golden_answer),
-                ("memory_correctness", memory_answer),
-                ("parametric_correctness", parametric_answer),
-            ):
+            for name, answer in candidate_answers.items():
                 if is_insufficient_answer(answer):
                     scores[name] = 0.0
             return RewardJudgeResult(
-                gold_correctness=scores["gold_correctness"],
-                memory_correctness=scores["memory_correctness"],
-                value=scores["value"],
+                gold_correctness=scores.get("gold_correctness", 0.0),
+                memory_correctness=scores.get("memory_correctness", 0.0),
                 parametric_correctness=scores.get("parametric_correctness", 0.0),
             )
 

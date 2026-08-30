@@ -1,10 +1,8 @@
 import json
-from typing import Any
 
 from attacker.models import (
     AttackMode,
     AttackerObservation,
-    AttackerRewardContext,
     GraphRouteBundle,
 )
 from attacker.validation import normalize_question
@@ -47,7 +45,10 @@ MODE_PROMPTS = {
 
 
 class Attacker:
-    """Question policy interface used by Qwen rollouts in verl."""
+    """Compatibility wrapper for the frozen Probe Question prompt.
+
+    The learned policy is RouteSelector. This class no longer creates Verl records.
+    """
 
     def __init__(self, neighborhood_size: int = 5):
         self.neighborhood_size = neighborhood_size
@@ -100,23 +101,3 @@ class Attacker:
     @staticmethod
     def normalize_question(question: str) -> str:
         return normalize_question(question)
-
-    def to_verl_record(
-        self,
-        observation: AttackerObservation,
-        memory: MemoryState,
-    ) -> dict[str, Any]:
-        reward_context = AttackerRewardContext.from_state(
-            observation.route,
-            memory,
-        )
-        return {
-            "data_source": "attacker",
-            "prompt": self.build_prompt(observation),
-            "ability": "memory_attack",
-            "reward_model": {
-                "style": "rule",
-                "ground_truth": observation.route.route_id,
-            },
-            "extra_info": reward_context.to_dict(),
-        }

@@ -17,9 +17,22 @@ class SupportAttributor:
     def select(
         self,
         oracle: OracleResult,
-        golden_answer: str,
         memories: tuple[MemoryNode, ...],
     ) -> tuple[str, ...]:
+        answer = self.answer_agent.answer_memories(oracle.question, memories)
+        if is_insufficient_answer(answer):
+            return ()
+        try:
+            correctness = self.answer_judge.evaluate(
+                oracle,
+                None,
+                answer,
+            ).memory_correctness
+        except StructuredOutputError:
+            return ()
+        if correctness < self.threshold:
+            return ()
+
         selected = list(memories)
         # Keep a removal only when the remaining memories still answer correctly.
         for memory in reversed(memories):
@@ -32,7 +45,7 @@ class SupportAttributor:
             try:
                 correctness = self.answer_judge.evaluate(
                     oracle,
-                    golden_answer,
+                    None,
                     answer,
                 ).memory_correctness
             except StructuredOutputError:

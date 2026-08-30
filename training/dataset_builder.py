@@ -3,12 +3,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-
-from attacker.attacker import Attacker
+from attacker.gap import storage_values, support_coverage
 from attacker.graph_router import GraphRouterPolicy, NoRouteFoundError
-from attacker.models import AttackMode, MemoryGraphView, RouterConfig
+from attacker.models import AttackMode, MemoryGraphView, RouteProbe, RouterConfig
+from attacker.selector import RouteSelector
 from defender.memory_builder import MemoryBuilder
 from memory.models import MemoryState
 from training.alternating import PendingMemoryEdit
@@ -32,6 +30,9 @@ def write_verl_dataset(
     seed: int = 0,
 ) -> DatasetFiles:
     """Split verl prompt records and materialize the two Parquet files."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
     items = list(records)
     if not items:
         raise ValueError("Cannot build an empty verl dataset")
@@ -61,34 +62,16 @@ def write_verl_dataset(
     )
 
 
-class AttackerDatasetBuilder:
-    """Sample Full Memory Graph routes and freeze the current M_t in each record."""
+class RouteProposalBuilder:
+    """Generate structurally valid route candidates without choosing an attack."""
 
     def __init__(
         self,
         reader: LongMemEvalGraphReader,
-        retriever: Any,
-        attacker: Attacker | None = None,
         seed: int = 0,
-        tokenizer: Any | None = None,
-        max_prompt_tokens: int = 4096,
     ):
         self.reader = reader
-        self.retriever = retriever
-        self.attacker = attacker or Attacker()
         self.seed = seed
-        self.tokenizer = tokenizer
-        self.max_prompt_tokens = max_prompt_tokens
-        self.stats = {
-            stage: {mode.value: 0 for mode in AttackMode}
-            for stage in (
-                "sampled",
-                "unique",
-                "attempted",
-                "within_limit",
-                "selected",
-            )
-        }
 
     def routes(self, case_index: int, count: int) -> tuple:
         config = RouterConfig(random_seed=self.seed, fallback_to_single_fact=False)
@@ -112,44 +95,79 @@ class AttackerDatasetBuilder:
                 break
         return tuple(routes)
 
+
+class RouteSelectorDatasetBuilder:
+    """Build pairwise route-value contrast prompts."""
+
+    def __init__(
+        self,
+        retriever: Any,
+        selector: RouteSelector | None = None,
+        seed: int = 0,
+        tokenizer: Any | None = None,
+        max_prompt_tokens: int = 4096,
+    ):
+        self.retriever = retriever
+        self.selector = selector or RouteSelector()
+        self.seed = seed
+        self.tokenizer = tokenizer
+        self.max_prompt_tokens = max_prompt_tokens
+
     def records(
         self,
-        case_index: int,
+        probes: tuple[RouteProbe, ...],
         memory: MemoryState,
-        count: int,
     ) -> tuple[dict[str, Any], ...]:
-        buckets = {mode: [] for mode in AttackMode}
-        for route in self.routes(case_index, count * len(AttackMode)):
-            mode = route.attack_mode.value
-            self.stats["sampled"][mode] += 1
-            self.stats["unique"][mode] += 1
-            buckets[route.attack_mode].append(route)
+        values = {
+            probe.route.route_id: value
+            for probe, value in zip(
+                probes,
+                storage_values(probes, memory),
+                strict=True,
+            )
+        }
+        covered = []
+        uncovered = []
+        for probe in probes:
+            target = (
+                covered
+                if support_coverage(probe, memory.active_nodes) >= 1.0
+                else uncovered
+            )
+            target.append(probe)
 
-        selected = []
-        offsets = {mode: 0 for mode in AttackMode}
-        while len(selected) < count:
-            added = False
-            for mode in AttackMode:
-                while offsets[mode] < len(buckets[mode]):
-                    route = buckets[mode][offsets[mode]]
-                    offsets[mode] += 1
-                    self.stats["attempted"][mode.value] += 1
-                    record = self.attacker.to_verl_record(
-                        self.attacker.observe(route, memory, self.retriever),
-                        memory,
-                    )
-                    if not self._fits(record):
-                        continue
-                    selected.append(record)
-                    self.stats["within_limit"][mode.value] += 1
-                    self.stats["selected"][mode.value] += 1
-                    added = True
-                    break
-                if len(selected) == count:
-                    break
-            if not added:
-                break
-        return tuple(selected)
+        rng = random.Random(self.seed)
+        rng.shuffle(covered)
+        rng.shuffle(uncovered)
+        if covered and uncovered:
+            pairs = [
+                (
+                    covered[index % len(covered)],
+                    uncovered[index % len(uncovered)],
+                )
+                for index in range(max(len(covered), len(uncovered)))
+            ]
+        else:
+            ranked = sorted(probes, key=lambda item: values[item.route.route_id])
+            pairs = []
+            while len(ranked) >= 2:
+                pairs.append((ranked.pop(0), ranked.pop()))
+
+        records = []
+        for pair in pairs:
+            pair = list(pair)
+            rng.shuffle(pair)
+            window = tuple(pair)
+            observation = self.selector.observe(window, memory, self.retriever)
+            record = self.selector.to_verl_record(
+                observation,
+                window,
+                memory,
+                tuple(values[item.route.route_id] for item in window),
+            )
+            if self._fits(record):
+                records.append(record)
+        return tuple(records)
 
     def _fits(self, record: dict[str, Any]) -> bool:
         if self.tokenizer is None:
@@ -160,6 +178,10 @@ class AttackerDatasetBuilder:
             add_generation_prompt=True,
         )
         return len(tokens) <= self.max_prompt_tokens
+
+
+# The old name remains importable, but now denotes proposal generation only.
+AttackerDatasetBuilder = RouteProposalBuilder
 
 
 def memory_builder_records(

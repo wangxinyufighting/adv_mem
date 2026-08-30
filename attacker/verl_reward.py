@@ -1,16 +1,16 @@
 from typing import Any
 
-from attacker.models import AttackerRewardContext
-from attacker.reward import AttackerReward
+from attacker.models import RouteSelectorRewardContext
+from attacker.reward import RouteSelectorReward
 
 
-_REWARD: AttackerReward | None = None
+_REWARD: RouteSelectorReward | None = None
 
 
-def _reward() -> AttackerReward:
+def _reward() -> RouteSelectorReward:
     global _REWARD
     if _REWARD is None:
-        _REWARD = AttackerReward.from_env()
+        _REWARD = RouteSelectorReward.from_env()
     return _REWARD
 
 
@@ -22,7 +22,7 @@ def compute_score(
     **kwargs: Any,
 ) -> dict[str, float]:
     """verl custom reward entry point."""
-    context = AttackerRewardContext.from_dict(extra_info)
+    context = RouteSelectorRewardContext.from_dict(extra_info)
     return _reward().evaluate(solution_str, context)
 
 
@@ -34,6 +34,6 @@ def compute_score_batch(
     group_ids: list[str],
     **kwargs: Any,
 ) -> list[dict[str, float]]:
-    """Score rollout groups while sharing one Oracle call per prompt."""
-    contexts = [AttackerRewardContext.from_dict(item) for item in extra_infos]
+    """Score route choices while caching each probe outcome per memory version."""
+    contexts = [RouteSelectorRewardContext.from_dict(item) for item in extra_infos]
     return _reward().evaluate_batch(solution_strs, contexts, list(group_ids))

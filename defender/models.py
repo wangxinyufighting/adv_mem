@@ -21,8 +21,10 @@ class MemoryBuilderObservation:
     memory_version: int
     question_id: str
     question: str
+    gap_type: str
     new_evidence: tuple[SupportingEvidence, ...]
     memory_neighborhood: tuple[MemoryNode, ...]
+    support_node_ids: tuple[str, ...] = ()
     protected_questions: tuple[ProtectedQuestion, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -30,10 +32,12 @@ class MemoryBuilderObservation:
             "memory_version": self.memory_version,
             "question_id": self.question_id,
             "question": self.question,
+            "gap_type": self.gap_type,
             "new_evidence": [asdict(item) for item in self.new_evidence],
             "memory_neighborhood": [
                 node.to_dict() for node in self.memory_neighborhood
             ],
+            "support_node_ids": list(self.support_node_ids),
             "protected_questions": [
                 asdict(item) for item in self.protected_questions
             ],
@@ -42,6 +46,7 @@ class MemoryBuilderObservation:
     def to_prompt_dict(self) -> dict[str, Any]:
         return {
             "question": self.question,
+            "gap_type": self.gap_type,
             "new_evidence": [
                 {
                     "text": item.quote,
@@ -60,6 +65,11 @@ class MemoryBuilderObservation:
                 }
                 for index, node in enumerate(self.memory_neighborhood)
             ],
+            "support_indices": [
+                index
+                for index, node in enumerate(self.memory_neighborhood)
+                if node.id in self.support_node_ids
+            ],
             "protected_questions": [
                 {
                     "id": item.question_id,
@@ -76,12 +86,14 @@ class MemoryBuilderObservation:
             memory_version=payload["memory_version"],
             question_id=payload["question_id"],
             question=payload["question"],
+            gap_type=payload.get("gap_type", "storage_gap"),
             new_evidence=tuple(
                 SupportingEvidence(**item) for item in payload["new_evidence"]
             ),
             memory_neighborhood=tuple(
                 MemoryNode.from_dict(item) for item in payload["memory_neighborhood"]
             ),
+            support_node_ids=tuple(payload.get("support_node_ids", ())),
             protected_questions=tuple(
                 ProtectedQuestion(**item) for item in payload["protected_questions"]
             ),
@@ -94,6 +106,27 @@ class MemoryBuilderRewardContext:
     memory: MemoryState
     oracle: OracleResult
     before_correctness: float
+
+    @classmethod
+    def from_state(
+        cls,
+        observation: MemoryBuilderObservation,
+        memory: MemoryState,
+        oracle: OracleResult,
+        before_correctness: float,
+    ) -> "MemoryBuilderRewardContext":
+        protected = {item.question_id for item in observation.protected_questions}
+        compact = MemoryState(
+            version=memory.version,
+            iteration=memory.iteration,
+            nodes={node.id: node for node in memory.active_nodes},
+            capability_ledger={
+                question_id: record
+                for question_id, record in memory.capability_ledger.items()
+                if question_id in protected
+            },
+        )
+        return cls(observation, compact, oracle, before_correctness)
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -2,7 +2,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
-from memory.models import MemoryNode, MemoryState
+from memory.models import MemoryNode, MemoryState, RouteAttackStats
 from utils.longmemeval_graph_reader import LongMemEvalGraphCase
 
 
@@ -237,6 +237,33 @@ class OracleResult:
 
 
 @dataclass(frozen=True)
+class RouteProbe:
+    """A route with one frozen, Oracle-validated diagnostic question."""
+
+    question_id: str
+    route: GraphRouteBundle
+    oracle: OracleResult
+    golden_answer: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "question_id": self.question_id,
+            "route": self.route.to_dict(),
+            "oracle": self.oracle.to_dict(),
+            "golden_answer": self.golden_answer,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "RouteProbe":
+        return cls(
+            question_id=payload["question_id"],
+            route=GraphRouteBundle.from_dict(payload["route"]),
+            oracle=OracleResult.from_dict(payload["oracle"]),
+            golden_answer=payload["golden_answer"],
+        )
+
+
+@dataclass(frozen=True)
 class AttackerObservation:
     route: GraphRouteBundle
     memory_neighborhood: tuple[MemoryNode, ...]
@@ -249,57 +276,87 @@ class AttackerObservation:
 
 
 @dataclass(frozen=True)
-class PriorQuestion:
-    question: str
-    answer: str
+class RouteCandidateObservation:
+    choice: int
+    probe: RouteProbe
+    memory_neighborhood: tuple[MemoryNode, ...]
+    history: RouteAttackStats
+
+    def to_prompt_dict(self) -> dict[str, Any]:
+        return {
+            "choice": self.choice,
+            "relation": self.probe.route.attack_mode.value,
+            "dimension": self.probe.route.mode_dimension,
+            "target": [node.memory for node in self.probe.route.evidence_nodes],
+            "probe_question": self.probe.oracle.question,
+            "known": [node.content for node in self.memory_neighborhood],
+            "history": self.history.to_dict(),
+        }
 
 
 @dataclass(frozen=True)
-class AttackerRewardContext:
-    route: GraphRouteBundle
+class RouteSelectorObservation:
+    memory_version: int
+    candidates: tuple[RouteCandidateObservation, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "memory_version": self.memory_version,
+            "candidates": [item.to_prompt_dict() for item in self.candidates],
+        }
+
+
+@dataclass(frozen=True)
+class RouteSelectorRewardContext:
     memory_version: int
     memory_nodes: tuple[MemoryNode, ...]
-    prior_questions: tuple[PriorQuestion, ...]
+    attack_history: tuple[RouteAttackStats, ...]
+    probes: tuple[RouteProbe, ...]
+    storage_values: tuple[float, ...] = ()
 
     @classmethod
     def from_state(
         cls,
-        route: GraphRouteBundle,
+        probes: tuple[RouteProbe, ...],
         memory: MemoryState,
-    ) -> "AttackerRewardContext":
+        storage_values: tuple[float, ...] = (),
+    ) -> "RouteSelectorRewardContext":
         return cls(
-            route=route,
             memory_version=memory.version,
             memory_nodes=tuple(memory.nodes.values()),
-            prior_questions=tuple(
-                PriorQuestion(record.question, record.oracle_answer)
-                for record in memory.capability_ledger.values()
-            ),
+            attack_history=tuple(memory.attack_history.values()),
+            probes=probes,
+            storage_values=storage_values,
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "route": self.route.to_dict(),
             "memory_version": self.memory_version,
             "memory_nodes": [node.to_dict() for node in self.memory_nodes],
-            "prior_questions": [asdict(item) for item in self.prior_questions],
+            "attack_history": [item.to_dict() for item in self.attack_history],
+            "probes": [item.to_dict() for item in self.probes],
+            "storage_values": list(self.storage_values),
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "AttackerRewardContext":
+    def from_dict(cls, payload: dict[str, Any]) -> "RouteSelectorRewardContext":
         return cls(
-            route=GraphRouteBundle.from_dict(payload["route"]),
             memory_version=payload["memory_version"],
             memory_nodes=tuple(
                 MemoryNode.from_dict(item) for item in payload["memory_nodes"]
             ),
-            prior_questions=tuple(
-                PriorQuestion(**item) for item in payload["prior_questions"]
+            attack_history=tuple(
+                RouteAttackStats.from_dict(item)
+                for item in payload.get("attack_history", [])
             ),
+            probes=tuple(RouteProbe.from_dict(item) for item in payload["probes"]),
+            storage_values=tuple(payload.get("storage_values", ())),
         )
 
     def memory_state(self) -> MemoryState:
+        history = {item.route_id: item for item in self.attack_history}
         return MemoryState(
             version=self.memory_version,
             nodes={node.id: node for node in self.memory_nodes},
+            attack_history=history,
         )

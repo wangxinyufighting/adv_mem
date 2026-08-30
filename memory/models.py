@@ -86,6 +86,7 @@ class CapabilityRecord:
     supporting_memory_node_ids: tuple[str, ...] = ()
     question_type: str | None = None
     difficulty: float | None = None
+    discovered_gap: str | None = None
     passed: bool = False
     verified_version: int = 0
 
@@ -110,6 +111,27 @@ class MemoryEditRecord:
     result_node_ids: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class RouteAttackStats:
+    """Compact cross-round history used by the learned route selector."""
+
+    route_id: str
+    attempts: int = 0
+    storage_gaps: int = 0
+    retrieval_gaps: int = 0
+    reasoning_gaps: int = 0
+    no_gaps: int = 0
+    last_memory_version: int = -1
+    last_gap: str | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "RouteAttackStats":
+        return cls(**payload)
+
+
 @dataclass
 class MemoryState:
     version: int = 0
@@ -120,6 +142,7 @@ class MemoryState:
     evidence_ledger: dict[str, tuple[MemoryEvidence, ...]] = field(default_factory=dict)
     success_pool: list[str] = field(default_factory=list)
     high_priority_buffer: list[str] = field(default_factory=list)
+    attack_history: dict[str, RouteAttackStats] = field(default_factory=dict)
 
     @classmethod
     def empty(cls) -> "MemoryState":
@@ -157,6 +180,9 @@ class MemoryState:
             ],
             "success_pool": list(self.success_pool),
             "high_priority_buffer": list(self.high_priority_buffer),
+            "attack_history": [
+                item.to_dict() for item in self.attack_history.values()
+            ],
         }
 
     @classmethod
@@ -193,4 +219,11 @@ class MemoryState:
             },
             success_pool=list(payload["success_pool"]),
             high_priority_buffer=list(payload["high_priority_buffer"]),
+            attack_history={
+                item.route_id: item
+                for item in (
+                    RouteAttackStats.from_dict(record)
+                    for record in payload.get("attack_history", [])
+                )
+            },
         )
