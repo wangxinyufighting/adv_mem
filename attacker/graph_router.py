@@ -441,10 +441,16 @@ class GraphRouterPolicy:
         signature: str,
         attempt: int,
     ) -> GraphRouteBundle:
-        sources_by_node = {
-            node_id: self._parse_sources(index.node_by_id[node_id])
-            for node_id in route.evidence_node_ids
-        }
+        unique_sources = {}
+        sources_by_node = {}
+        for node_id in route.evidence_node_ids:
+            node_sources = {}
+            for source in self._parse_sources(index.node_by_id[node_id]):
+                identity = (source.role, source.chat_time, source.content)
+                canonical = unique_sources.setdefault(identity, source)
+                node_sources[canonical.source_id] = canonical
+            sources_by_node[node_id] = tuple(node_sources.values())
+
         evidence_nodes = tuple(
             self._route_node(index.node_by_id[node_id], sources_by_node[node_id])
             for node_id in route.evidence_node_ids
@@ -453,11 +459,7 @@ class GraphRouterPolicy:
             self._route_node(index.node_by_id[node_id], ())
             for node_id in route.connector_node_ids
         )
-        source_records = tuple(
-            source
-            for node_id in route.evidence_node_ids
-            for source in sources_by_node[node_id]
-        )
+        source_records = tuple(unique_sources.values())
 
         return GraphRouteBundle(
             route_id=signature,
@@ -499,17 +501,14 @@ class GraphRouterPolicy:
 
     @staticmethod
     def _parse_sources(node: dict) -> tuple[SourceRecord, ...]:
-        records = []
-        for index, raw_source in enumerate(node.get("sources") or []):
-            # MemOS exports may JSON-encode the same source more than once.
-            source = _source_payload(raw_source)
-            records.append(
-                SourceRecord(
-                    source_id=f"{node['id']}:{index}",
-                    node_id=node["id"],
-                    role=source.get("role"),
-                    chat_time=source.get("chat_time"),
-                    content=source.get("content", ""),
-                )
+        return tuple(
+            SourceRecord(
+                source_id=f"{node['id']}:{index}",
+                node_id=node["id"],
+                role=source.get("role"),
+                chat_time=source.get("chat_time"),
+                content=source.get("content", ""),
             )
-        return tuple(records)
+            for index, raw_source in enumerate(node.get("sources") or [])
+            for source in (_source_payload(raw_source),)
+        )

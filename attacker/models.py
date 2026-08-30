@@ -182,11 +182,8 @@ class GraphRouteBundle:
 
     def to_attacker_context(self) -> dict[str, Any]:
         """Expose only route fields needed to generate the question."""
-        context = {
-            "mode": self.attack_mode.value,
-            "evidence": [node.memory for node in self.evidence_nodes],
-        }
-        if self.mode_dimension:
+        context = {"target": [node.memory for node in self.evidence_nodes]}
+        if self.attack_mode == AttackMode.COMPARISON and self.mode_dimension:
             context["dimension"] = self.mode_dimension
         return context
 
@@ -246,8 +243,8 @@ class AttackerObservation:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "route": self.route.to_attacker_context(),
-            "known_memory": [node.content for node in self.memory_neighborhood],
+            **self.route.to_attacker_context(),
+            "known": [node.content for node in self.memory_neighborhood],
         }
 
 

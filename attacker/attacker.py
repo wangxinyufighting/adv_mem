@@ -2,6 +2,7 @@ import json
 from typing import Any
 
 from attacker.models import (
+    AttackMode,
     AttackerObservation,
     AttackerRewardContext,
     GraphRouteBundle,
@@ -12,24 +13,37 @@ from utils.json_output import clean_model_output
 from utils.memory_retrieval import HybridMemoryRetriever
 
 
-SYSTEM_PROMPT = """Write one natural question that exposes a useful gap in long-term
-conversational memory.
+SYSTEM_PROMPT = """Write one natural, standalone question.
 
-The answer must be fully supported by evidence and absent from known_memory. A useful
-question recalls a specific personal fact or prior response, combines related facts,
-tracks a real change, or compares facts on the supplied dimension.
+Useful questions sound like real requests to recall or use an earlier conversation:
+a personal detail, event, preference, decision, plan, current state, recommendation,
+or other substantive prior answer.
 
-Follow mode:
-- single_fact: ask for one specific detail.
-- same_topic: require at least two related facts.
-- temporal_evolution: require the earlier and later states.
-- comparison: require both facts and compare them on dimension.
+The answer must be determined by target and not already determined by known. Make the
+subject specific, but do not reveal the answer. Use I/my for the user's life and you
+when recalling an earlier assistant response.
 
-Use first-person wording when natural. Do not invent information, reveal the answer,
-combine unrelated details, or mention evidence, memory, routes, nodes, IDs, or these
-instructions. The question must be standalone and end with a question mark.
+Do not invent information or join unrelated details. Never mention the input or task.
+Return exactly one question on one line, ending with a question mark."""
 
-Return only the question, with no JSON, label, Markdown, or explanation."""
+MODE_PROMPTS = {
+    AttackMode.SINGLE_FACT: (
+        "Ask for one specific name, person, place, time, quantity, preference, "
+        "decision, status, or prior-response detail."
+    ),
+    AttackMode.SAME_TOPIC: (
+        "Use at least two related target entries. Ask for a total, count, combined "
+        "result, relationship, or personalized answer that depends on all of them."
+    ),
+    AttackMode.TEMPORAL_EVOLUTION: (
+        "Use earlier and later target entries. Ask about a real change, previous "
+        "and current states, event order, or elapsed time."
+    ),
+    AttackMode.COMPARISON: (
+        "Compare at least two target entries on dimension. Ask which is greater, "
+        "most or least, or for the difference."
+    ),
+}
 
 
 class Attacker:
@@ -60,7 +74,13 @@ class Attacker:
         observation: AttackerObservation,
     ) -> list[dict[str, str]]:
         return [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": (
+                    f"{SYSTEM_PROMPT}\n\n"
+                    f"{MODE_PROMPTS[observation.route.attack_mode]}"
+                ),
+            },
             {
                 "role": "user",
                 "content": (

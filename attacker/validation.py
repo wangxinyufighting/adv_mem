@@ -52,7 +52,12 @@ def answer_is_leaked(question: str, answer: str) -> bool:
 
 
 def route_fidelity(route: GraphRouteBundle, oracle: OracleResult) -> float:
-    used = {item.node_id for item in oracle.supporting_evidence}
+    source_ids = {item.source_id for item in oracle.supporting_evidence}
+    used = {
+        node.id
+        for node in route.evidence_nodes
+        if source_ids.intersection(node.source_ids)
+    }
     intended = {node.id for node in route.evidence_nodes}
     required = 1 if route.attack_mode == AttackMode.SINGLE_FACT else 2
     return min(1.0, len(used & intended) / required)

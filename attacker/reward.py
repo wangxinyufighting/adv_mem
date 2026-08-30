@@ -1,7 +1,7 @@
 import json
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Lock
 from typing import Any, cast
@@ -13,7 +13,7 @@ from attacker.models import (
     GraphRouteBundle,
     OracleResult,
 )
-from attacker.oracle import DeepSeekOracle
+from attacker.oracle import DeepSeekOracle, OracleBatchError
 from attacker.reward_judge import DeepSeekRewardJudge
 from attacker.validation import (
     answer_is_leaked,
@@ -73,6 +73,8 @@ class AttackerReward:
         self.config = config or AttackerRewardConfig()
         self.trace_path = Path(trace_path) if trace_path else None
         self._trace_lock = Lock()
+        self._oracle_cache: dict[tuple[str, str], OracleResult] = {}
+        self._oracle_lock = Lock()
         if self.trace_path:
             self.trace_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -96,10 +98,13 @@ class AttackerReward:
         prepared = self._prepare(response, context)
         if isinstance(prepared, dict):
             return prepared
-        try:
-            oracle = self.oracle.evaluate(prepared.question, context.route)
-        except StructuredOutputError as error:
-            return self._oracle_unavailable(prepared, error)
+        oracle = self._cached_oracle(prepared)
+        if oracle is None:
+            try:
+                oracle = self.oracle.evaluate(prepared.question, context.route)
+            except StructuredOutputError as error:
+                return self._oracle_unavailable(prepared, error)
+            self._cache_oracle(prepared, oracle)
         return self._score(prepared, oracle)
 
     def evaluate_batch(
@@ -123,30 +128,81 @@ class AttackerReward:
 
         for items in groups.values():
             route = items[0][1].context.route
-            try:
-                oracle_results = self.oracle.evaluate_many(
-                    route,
-                    tuple(
-                        (item_id, item.question)
-                        for item_id, (_, item) in enumerate(items)
-                    ),
+            unique: dict[str, list[tuple[int, _PreparedAttack]]] = {}
+            for index, item in items:
+                oracle = self._cached_oracle(item)
+                if oracle is not None:
+                    results[index] = self._score(item, oracle)
+                    continue
+                unique.setdefault(normalize_question(item.question), []).append(
+                    (index, item)
                 )
+            if not unique:
+                continue
+
+            buckets = tuple(unique.values())
+            questions = tuple(
+                (item_id, bucket[0][1].question)
+                for item_id, bucket in enumerate(buckets)
+            )
+            try:
+                oracle_results = self.oracle.evaluate_many(route, questions)
+                oracle_errors = {}
+            except OracleBatchError as batch_error:
+                batch_errors.append(str(batch_error))
+                oracle_results = batch_error.results
+                oracle_errors = batch_error.errors
             except StructuredOutputError as batch_error:
                 batch_errors.append(str(batch_error))
-                for index, item in items:
-                    item.trace["oracle_batch_error"] = str(batch_error)
+                oracle_results = {}
+                oracle_errors = {}
+                for item_id, bucket in enumerate(buckets):
+                    item = bucket[0][1]
                     try:
                         oracle = self.oracle.evaluate(item.question, route)
                     except StructuredOutputError as error:
-                        results[index] = self._oracle_unavailable(item, error)
+                        oracle_errors[item_id] = error
                     else:
-                        results[index] = self._score(item, oracle)
-                continue
-            for item_id, (index, item) in enumerate(items):
-                results[index] = self._score(item, oracle_results[item_id])
+                        oracle_results[item_id] = oracle
+
+            for item_id, bucket in enumerate(buckets):
+                oracle = oracle_results.get(item_id)
+                if oracle is None:
+                    error = oracle_errors[item_id]
+                    for index, item in bucket:
+                        item.trace["oracle_batch_error"] = str(error)
+                        results[index] = self._oracle_unavailable(item, error)
+                    continue
+                self._cache_oracle(bucket[0][1], oracle)
+                for index, item in bucket:
+                    results[index] = self._score(
+                        item,
+                        replace(oracle, question=item.question),
+                    )
         scored = cast(list[dict[str, float]], results)
         self._log_batch(scored, batch_errors)
         return scored
+
+    def _cached_oracle(self, prepared: _PreparedAttack) -> OracleResult | None:
+        key = (
+            prepared.context.route.route_signature,
+            normalize_question(prepared.question),
+        )
+        with self._oracle_lock:
+            oracle = self._oracle_cache.get(key)
+        return replace(oracle, question=prepared.question) if oracle else None
+
+    def _cache_oracle(
+        self,
+        prepared: _PreparedAttack,
+        oracle: OracleResult,
+    ) -> None:
+        key = (
+            prepared.context.route.route_signature,
+            normalize_question(prepared.question),
+        )
+        with self._oracle_lock:
+            self._oracle_cache[key] = oracle
 
     @staticmethod
     def _log_batch(
@@ -240,7 +296,7 @@ class AttackerReward:
     def _oracle_unavailable(
         self,
         prepared: _PreparedAttack,
-        error: StructuredOutputError,
+        error: Exception,
     ) -> dict[str, float]:
         return self._finish(
             self._result(
