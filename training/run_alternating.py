@@ -60,8 +60,7 @@ class CaseRound:
     defended: int
     committed: int = 0
     discarded: int = 0
-    attacker_saturated: bool = False
-    builder_saturated: bool = False
+    saturated: bool = False
     compaction_attempts: int = 0
 
 
@@ -261,6 +260,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 builder,
                 answer_agent,
                 retriever,
+                answer_judge,
                 DeepSeekMemoryJudge.from_env(),
             )
             with VLLMPolicyServer(
@@ -327,7 +327,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             fresh_ids = {
                 candidate.question_id for candidate in case_round.fresh
             }
-            case_round.attacker_saturated = (
+            case_round.saturated = (
                 len(case_round.fresh) >= stop_config.min_valid_questions
                 and all(available for _, available, _ in evaluations)
                 and not any(
@@ -336,11 +336,11 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 )
                 and not case_round.store.state.high_priority_buffer
             )
-            if case_round.attacker_saturated:
+            if case_round.saturated and stop_config.max_neighborhoods > 0:
+                # Compaction is an optional audited optimization, not evidence that
+                # the repair policy has or has not converged.
                 if case_round.store.state.active_nodes:
                     compact_cases.append(case_index)
-                else:
-                    case_round.builder_saturated = True
 
         if compact_cases:
             with VLLMPolicyServer(
@@ -358,12 +358,11 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                         retriever,
                         answer_agent,
                         answer_judge,
-                        case_state.questions,
+                        DeepSeekMemoryJudge.from_env(),
                         stop_config,
                     )
                     audit = auditor.audit(policy, case_round.store.state)
                     case_round.store.state = audit.memory
-                    case_round.builder_saturated = not audit.compressed
                     case_round.compaction_attempts = audit.attempts
 
         for case_index, case_round in case_rounds.items():
@@ -371,10 +370,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             case_state.stopped = StopCondition(
                 stop_config,
                 case_state.stop_state,
-            ).update(
-                case_round.attacker_saturated,
-                case_round.builder_saturated,
-            )
+            ).update(case_round.saturated)
             case_round.store.advance_iteration()
             case_state.memory = case_round.store.state
             print(
@@ -383,8 +379,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 f"committed={case_round.committed}, "
                 f"discarded={case_round.discarded}, "
                 f"memory_nodes={len(case_state.memory.active_nodes)}, "
-                f"attack_saturated={case_round.attacker_saturated}, "
-                f"builder_saturated={case_round.builder_saturated}, "
+                f"saturated={case_round.saturated}, "
                 f"compaction_attempts={case_round.compaction_attempts}"
             )
 
@@ -427,7 +422,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--stop-patience", type=int, default=2)
     parser.add_argument("--stop-min-valid", type=int, default=4)
-    parser.add_argument("--compaction-neighborhoods", type=int, default=8)
+    parser.add_argument("--compaction-neighborhoods", type=int, default=0)
     return parser.parse_args()
 
 

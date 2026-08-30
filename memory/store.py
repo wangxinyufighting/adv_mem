@@ -1,6 +1,6 @@
+import hashlib
 import re
 from dataclasses import replace
-from uuid import uuid4
 
 from memory.models import (
     CapabilityRecord,
@@ -24,6 +24,28 @@ def _unique(*groups: tuple[str, ...]) -> tuple[str, ...]:
 
 def estimate_token_count(text: str) -> int:
     return len(TOKEN_PATTERN.findall(text))
+
+
+def _node_id(version: int, action: MemoryEditAction) -> str:
+    draft = action.new_memory.content if action.new_memory else ""
+    value = "\0".join(
+        (str(version), action.operation.value, *action.target_node_ids, draft)
+    )
+    return f"memory-{hashlib.sha256(value.encode()).hexdigest()[:24]}"
+
+
+def _time_span(
+    supplied: tuple[str | None, str | None] | None,
+    targets: tuple[MemoryNode, ...],
+) -> tuple[str | None, str | None] | None:
+    values = [
+        value
+        for span in (supplied, *(node.time_span for node in targets))
+        if span
+        for value in span
+        if value
+    ]
+    return (min(values), max(values)) if values else None
 
 
 class MemoryStore:
@@ -80,6 +102,7 @@ class MemoryStore:
         provenance_node_ids: tuple[str, ...] = (),
         source_ids: tuple[str, ...] = (),
         time_span: tuple[str | None, str | None] | None = None,
+        inherit_target_provenance: bool = False,
     ) -> MemoryState:
         """Apply one builder action as one memory version."""
         if action.operation == MemoryOperation.NOOP:
@@ -100,15 +123,23 @@ class MemoryStore:
         if action.operation in (MemoryOperation.ADD, MemoryOperation.MERGE):
             draft = action.new_memory
             node = MemoryNode(
-                id=str(uuid4()),
+                id=_node_id(version, action),
                 content=draft.content,
                 provenance_node_ids=_unique(
                     provenance_node_ids,
-                    *(node.provenance_node_ids for node in targets),
+                    *(
+                        tuple(node.provenance_node_ids for node in targets)
+                        if inherit_target_provenance
+                        else ()
+                    ),
                 ),
                 source_ids=_unique(
                     source_ids,
-                    *(node.source_ids for node in targets),
+                    *(
+                        tuple(node.source_ids for node in targets)
+                        if inherit_target_provenance
+                        else ()
+                    ),
                 ),
                 linked_questions=_unique(
                     *(node.linked_questions for node in targets),
@@ -118,7 +149,7 @@ class MemoryStore:
                     draft.tags,
                     *(node.tags for node in targets),
                 ),
-                time_span=time_span,
+                time_span=_time_span(time_span, targets),
                 token_count=estimate_token_count(draft.content),
                 created_version=version,
                 updated_version=version,

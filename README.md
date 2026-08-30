@@ -20,10 +20,11 @@ Full Memory Graph
   → M_t 回答正确：写入 Success Pool
   → M_t 回答错误：构建 Memory Builder Parquet
   → Verl GRPO 训练 Memory Builder
-  → Memory Builder 生成 ADD / MERGE / DELETE / NOOP
-  → commit_valid=1 且 Reward > commit threshold：提交 M_temp 为 M_t+1
-  → 其他情况：保留 M_t，写入 High-Priority Buffer
-  → 连续多轮无有效攻击且无无损压缩：停止
+  → Memory Builder 按 gap_type 生成 ADD / MERGE
+  → Reward 在无 provenance 的 M_temp 上验证结构、当前答案和局部回归
+  → Commit 在可信快照上复验当前问题和全部历史成功问题
+  → 全部通过：原子提交 M_temp；否则回滚并写入 High-Priority Buffer
+  → 连续多轮无有效攻击且 High-Priority Buffer 为空：停止
 ```
 
 Route Selector 和 Memory Builder 按轮次交替训练，不同时更新。Probe Question
@@ -40,6 +41,13 @@ Route Selector 和 Memory Builder 按轮次交替训练，不同时更新。Prob
 Route Selector 的主 reward 来自缺口类型，另加随历史尝试次数衰减的探索奖励。
 Question validity、标准答案和 evidence 在 Probe 创建阶段完成，不再由每个 rollout
 重复判断。
+
+Memory Builder 的 repair 与 compaction 分离：repair 只允许 `ADD/MERGE`；
+`DELETE/NOOP` 只用于可选的 compaction。结构 Judge 只返回 `grounded`、
+`evidence_covered`、`targets_preserved` 三个布尔值；答案正确性与历史能力回归统一
+交给同一个语义 Judge。Compaction 的候选必须通过结构验证和全部 Success Pool
+回归测试，但压缩成功或失败都不作为收敛证据。Compaction 默认关闭；只有显式
+设置 `--compaction-neighborhoods` 才会启用。
 
 ## 环境
 
@@ -165,8 +173,10 @@ bash train.sh \
 - 至少 `--stop-min-valid` 个由 Selector 在新 Route Pool 中选出的独立 Probe
   都能由 `M_t` 回答，且
   High-Priority Buffer 为空。
-- Memory Builder 在指定数量的 neighborhood 中找不到不引起
-  `linked_questions` 回归的 DELETE/MERGE。
+
+达到条件后可在最多 `--compaction-neighborhoods` 个相关 memory pair 上尝试
+`DELETE/MERGE`。只有全部 Success Pool 问题都不回归时才提交压缩；没有可压缩项
+不会额外增加或清零收敛轮数。
 
 全部 case 停止后训练结束，`--rounds` 是仍然生效的硬上限。
 
@@ -207,6 +217,10 @@ PendingMemoryEdit
   → write_verl_dataset
   → train.parquet / val.parquet
 ```
+
+Observation 会显式包含 `gap_type`、当前 top-k neighborhood 和按 provenance 找到的
+隐藏 support。`storage_gap` 且没有 support 时只能 `ADD`；`retrieval_gap` 与
+`reasoning_gap` 必须 `MERGE` 全部 support，避免重复写入已经存在的事实。
 
 ## 输出和恢复
 
