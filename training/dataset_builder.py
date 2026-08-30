@@ -3,9 +3,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-
 from attacker.graph_router import GraphRouterPolicy, NoRouteFoundError
 from attacker.models import AttackMode, MemoryGraphView, RouteProbe, RouterConfig
 from attacker.selector import RouteSelector
@@ -32,6 +29,9 @@ def write_verl_dataset(
     seed: int = 0,
 ) -> DatasetFiles:
     """Split verl prompt records and materialize the two Parquet files."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
     items = list(records)
     if not items:
         raise ValueError("Cannot build an empty verl dataset")
@@ -124,14 +124,19 @@ class RouteSelectorDatasetBuilder:
         records = []
         shuffled = list(probes)
         random.Random(self.seed).shuffle(shuffled)
-        for offset in range(0, len(shuffled), self.candidates_per_prompt):
-            window = tuple(shuffled[offset : offset + self.candidates_per_prompt])
-            if len(window) < 2:
-                continue
-            observation = self.selector.observe(window, memory, self.retriever)
-            record = self.selector.to_verl_record(observation, window, memory)
-            if self._fits(record):
-                records.append(record)
+        while len(shuffled) >= 2:
+            size = min(len(shuffled), self.candidates_per_prompt)
+            while size >= 2:
+                window = tuple(shuffled[:size])
+                observation = self.selector.observe(window, memory, self.retriever)
+                record = self.selector.to_verl_record(observation, window, memory)
+                if self._fits(record):
+                    records.append(record)
+                    del shuffled[:size]
+                    break
+                size -= 1
+            else:
+                shuffled.pop(0)
         return tuple(records)
 
     def _fits(self, record: dict[str, Any]) -> bool:

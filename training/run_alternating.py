@@ -133,8 +133,16 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             case_state.questions.update(
                 {probe.question_id: probe for probe in probes}
             )
-            attacker_records.extend(
-                selector_data_builder.records(probes, case_state.memory)
+            records = selector_data_builder.records(probes, case_state.memory)
+            attacker_records.extend(records)
+            print(
+                f"Route data, case {case_index}: routes={len(routes)} "
+                f"valid_probes={len(probes)} selector_records={len(records)}"
+            )
+        if not attacker_records:
+            raise RuntimeError(
+                "No route-selector records; each case needs at least two valid "
+                "probes that fit --max-prompt-length"
             )
         attacker_data = write_verl_dataset(
             attacker_records,

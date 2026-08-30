@@ -29,7 +29,7 @@ facts on dimension. Use the smallest sufficient source set.
 Return one json object only:
 {"results":[{"id":0,"valid":true,"answer":"...","sources":[0]}]}
 For an invalid item return exactly:
-{"id":0,"valid":false,"reason":"unsupported"}
+{"results":[{"id":0,"valid":false,"reason":"unsupported"}]}
 reason must be not_question, unsupported, ambiguous, answer_leak, or mode_mismatch.
 Do not add fields."""
 
@@ -260,6 +260,13 @@ class DeepSeekOracle:
         try:
             payload = parse_json_object(content, ("results",))
         except ValueError as error:
+            if len(questions) == 1:
+                try:
+                    item = parse_json_object(content, ("id", "valid"))
+                    payload = {"results": [item]}
+                    return self._parse_results(route, sources, questions, payload)
+                except ValueError:
+                    pass
             reasoning = getattr(choice.message, "reasoning_content", "") or ""
             raise ValueError(
                 f"{error}; finish_reason={getattr(choice, 'finish_reason', None)!r}; "

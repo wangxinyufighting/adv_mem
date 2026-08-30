@@ -14,6 +14,7 @@ if "openai" not in sys.modules:
     sys.modules["openai"] = openai
 
 from attacker.gap import GapEvaluation, GapEvaluator, GapType
+from attacker.oracle import DeepSeekOracle
 from attacker.models import (
     AttackMode,
     GraphRouteBundle,
@@ -28,6 +29,7 @@ from attacker.reward_judge import DeepSeekRewardJudge
 from attacker.selector import RouteSelector
 from memory.models import MemoryNode, MemoryState
 from memory.store import MemoryStore
+from training.dataset_builder import RouteSelectorDatasetBuilder
 
 
 class _Retriever:
@@ -109,6 +111,28 @@ def _memory_node(provenance=True) -> MemoryNode:
 
 
 class RouteSelectorTests(unittest.TestCase):
+    def test_oracle_accepts_legacy_single_rejection(self):
+        class Completions:
+            def create(self, **kwargs):
+                message = types.SimpleNamespace(
+                    content='{"id":0,"valid":false,"reason":"not_question"}'
+                )
+                choice = types.SimpleNamespace(
+                    message=message,
+                    finish_reason="stop",
+                )
+                return types.SimpleNamespace(choices=[choice])
+
+        client = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=Completions())
+        )
+        result = DeepSeekOracle(client=client, attempts=1).evaluate(
+            "Remember Kyoto",
+            _probe().route,
+        )
+        self.assertFalse(result.valid)
+        self.assertEqual(result.invalid_reason, "not_question")
+
     def test_choice_parser_requires_one_in_range_integer(self):
         self.assertEqual(RouteSelector.parse_choice('{"choice": 1}', 2), 1)
         for response in ('{"choice": 2}', '{"choice": true}', '{"choice": 0, "x": 1}'):
@@ -226,6 +250,35 @@ class RouteSelectorTests(unittest.TestCase):
             [0, 1],
         )
         self.assertIn('"probe_question"', record["prompt"][1]["content"])
+
+    def test_selector_shrinks_an_oversized_candidate_window(self):
+        first = _probe()
+        probes = tuple(
+            replace(
+                first,
+                question_id=f"question-{index}",
+                route=replace(
+                    first.route,
+                    route_id=f"route-{index}",
+                    route_signature=f"route-{index}",
+                ),
+                oracle=replace(first.oracle, route_id=f"route-{index}"),
+            )
+            for index in range(4)
+        )
+
+        class Tokenizer:
+            def apply_chat_template(self, prompt, **kwargs):
+                choices = prompt[1]["content"].count('"choice"')
+                return range(2000 if choices > 2 else 100)
+
+        records = RouteSelectorDatasetBuilder(
+            _Retriever(),
+            candidates_per_prompt=4,
+            tokenizer=Tokenizer(),
+            max_prompt_tokens=1000,
+        ).records(probes, MemoryState.empty())
+        self.assertEqual(len(records), 2)
 
     def test_attack_history_is_backward_compatible_and_deduplicated(self):
         state = MemoryState.empty()
