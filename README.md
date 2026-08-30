@@ -147,9 +147,12 @@ bash train.sh --rounds 20
 - Full Graph：`data/longmemeval/memory_graph_fullgraph5.json`
 - Backbone：`Qwen/Qwen3-0.6B`
 - 每个 case 提出 16 条候选 Route
-- 每个 Route Selector prompt 包含 8 条候选 Route
+- 每个 Route Selector prompt 对比 2 条 Route（已覆盖 / 未覆盖）
 - 每轮为每个 case 处理 8 个 Question
-- Route Selector 和 Memory Builder 各训练 1 epoch
+- Route Selector 和 Memory Builder 各训练 2 epoch，batch size 为 2
+
+空记忆阶段跳过 Route Selector，先随机抽取有效 Route 训练 Memory Builder；
+只有同时存在已覆盖和未覆盖 Route 时才训练 Route Selector。
 
 常用参数：
 
@@ -157,10 +160,10 @@ bash train.sh --rounds 20
 bash train.sh \
   --rounds 5 \
   --routes-per-case 16 \
-  --selector-candidates 8 \
+  --selector-candidates 2 \
   --candidates-per-case 8 \
-  --epochs 1 \
-  --batch-size 8 \
+  --epochs 2 \
+  --batch-size 2 \
   --gpus 1 \
   --stop-patience 2 \
   --stop-min-valid 4 \

@@ -1,6 +1,7 @@
 import argparse
 import os
 import random
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -116,7 +117,6 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         selector_data_builder = RouteSelectorDatasetBuilder(
             retriever,
             selector,
-            candidates_per_prompt=config.selector_candidates,
             seed=args.seed + round_index,
             tokenizer=tokenizer,
             max_prompt_tokens=args.max_prompt_length,
@@ -139,39 +139,45 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 f"Route data, case {case_index}: routes={len(routes)} "
                 f"valid_probes={len(probes)} selector_records={len(records)}"
             )
-        if not attacker_records:
-            raise RuntimeError(
-                "No route-selector records; each case needs at least two valid "
-                "probes that fit --max-prompt-length"
+        if attacker_records:
+            attacker_data = write_verl_dataset(
+                attacker_records,
+                round_dir / "attacker_data",
+                seed=args.seed + round_index,
             )
-        attacker_data = write_verl_dataset(
-            attacker_records,
-            round_dir / "attacker_data",
-            seed=args.seed + round_index,
-        )
-        print(
-            f"Round {round_index}: training Route Selector on "
-            f"{attacker_data.train_size} prompts from "
-            f"{sum(len(items) for items in training_probes.values())} probes"
-        )
-        state.attacker_model = runner.train(
-            "attacker",
-            state.attacker_model,
-            attacker_data,
-            round_dir / "attacker",
-        )
+            print(
+                f"Round {round_index}: training Route Selector on "
+                f"{attacker_data.train_size} contrast prompts from "
+                f"{sum(len(items) for items in training_probes.values())} probes"
+            )
+            state.attacker_model = runner.train(
+                "attacker",
+                state.attacker_model,
+                attacker_data,
+                round_dir / "attacker",
+            )
+        else:
+            print(
+                f"Round {round_index}: skipping Route Selector; "
+                "no covered-versus-uncovered route pairs"
+            )
 
         audit_proposal_builder = RouteProposalBuilder(
             reader,
             seed=args.seed + 100_000 + round_index,
         )
-        with VLLMPolicyServer(
-            runner.verl_dir,
-            state.attacker_model,
-            config.policy_port,
-            round_dir / "attacker_server.log",
-            config.gpu_memory_utilization,
-        ) as policy:
+        attacker_server = (
+            VLLMPolicyServer(
+                runner.verl_dir,
+                state.attacker_model,
+                config.policy_port,
+                round_dir / "attacker_server.log",
+                config.gpu_memory_utilization,
+            )
+            if attacker_records
+            else nullcontext(None)
+        )
+        with attacker_server as policy:
             candidates_by_case = {}
             fresh_by_case = {}
             for case_index, case_state in active_cases.items():
@@ -182,14 +188,17 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                     if question_id in case_state.questions
                 )[:max_priority]
                 fresh_count = config.candidates_per_case - len(high_priority)
-                routes = audit_proposal_builder.routes(
-                    case_index,
-                    max(config.routes_per_case, fresh_count * 2),
-                )
-                pool = probe_factory.build_many(
-                    routes,
-                    tuple(case_state.questions.values()),
-                )
+                if case_state.memory.active_nodes:
+                    routes = audit_proposal_builder.routes(
+                        case_index,
+                        max(config.routes_per_case, fresh_count * 2),
+                    )
+                    pool = probe_factory.build_many(
+                        routes,
+                        tuple(case_state.questions.values()),
+                    )
+                else:
+                    pool = training_probes[case_index]
                 case_state.questions.update(
                     {probe.question_id: probe for probe in pool}
                 )
@@ -202,13 +211,17 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 random.Random(
                     args.seed + 200_000 + round_index * 10_000 + case_index
                 ).shuffle(unseen)
-                fresh = selector.select_many(
-                    policy,
-                    tuple(unseen),
-                    case_state.memory,
-                    retriever,
-                    fresh_count,
-                    config.selector_candidates,
+                fresh = (
+                    selector.select_many(
+                        policy,
+                        tuple(unseen),
+                        case_state.memory,
+                        retriever,
+                        fresh_count,
+                        config.selector_candidates,
+                    )
+                    if policy is not None and case_state.memory.active_nodes
+                    else tuple(unseen[:fresh_count])
                 )
                 candidates_by_case[case_index] = high_priority + fresh
                 fresh_by_case[case_index] = fresh
@@ -291,7 +304,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                             continue
                         response = policy.generate(
                             builder.build_prompt(current.observation),
-                            512,
+                            256,
                         )
                         reward = reward_model.evaluate(
                             response,
@@ -419,10 +432,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--work-dir", type=Path, default=ROOT / "data/training")
     parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--routes-per-case", type=int, default=16)
-    parser.add_argument("--selector-candidates", type=int, default=8)
+    parser.add_argument("--selector-candidates", type=int, default=2)
     parser.add_argument("--candidates-per-case", type=int, default=8)
-    parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--max-prompt-length", type=int, default=4096)
     parser.add_argument("--gpus", type=int, default=1)
     parser.add_argument("--policy-port", type=int, default=8002)

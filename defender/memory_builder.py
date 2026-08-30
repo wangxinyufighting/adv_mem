@@ -15,7 +15,7 @@ from memory.models import (
     MemoryState,
 )
 from memory.store import MemoryStore
-from utils.json_output import parse_json_object
+from utils.json_output import clean_model_output
 
 
 class ActionSchemaError(ValueError):
@@ -158,12 +158,11 @@ class MemoryBuilder:
         neighborhood: tuple[MemoryNode, ...],
     ) -> MemoryEditAction:
         try:
-            payload = parse_json_object(
-                response,
-                ("operation", "targets", "content"),
-            )
-        except ValueError as error:
+            payload = json.loads(clean_model_output(response))
+        except (json.JSONDecodeError, TypeError) as error:
             raise ActionSchemaError from error
+        if not isinstance(payload, dict):
+            raise ActionSchemaError("Action must be a JSON object")
         if set(payload) != {"operation", "targets", "content"}:
             raise ActionSchemaError(
                 "Action must contain exactly operation, targets, and content"

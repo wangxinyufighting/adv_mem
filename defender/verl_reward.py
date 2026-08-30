@@ -20,3 +20,30 @@ def compute_score(
         _REWARD = MemoryBuilderReward.from_env()
     context = MemoryBuilderRewardContext.from_dict(extra_info)
     return _REWARD.evaluate(solution_str, context)
+
+
+def compute_score_batch(
+    data_sources: list[str],
+    solution_strs: list[str],
+    ground_truths: list[str],
+    extra_infos: list[dict[str, Any]],
+    group_ids: list[str],
+    **kwargs: Any,
+) -> list[dict[str, float]]:
+    """Score a batch once per unique response in each prompt group."""
+    cache = {}
+    results = []
+    for response, context, group_id in zip(
+        solution_strs, extra_infos, group_ids, strict=True
+    ):
+        key = (str(group_id), response)
+        if key not in cache:
+            cache[key] = compute_score("", response, "", context)
+        results.append(cache[key])
+    print(
+        "Memory Builder Reward: "
+        f"samples={len(results)} unique={len(cache)} "
+        f"unavailable={sum(not item['reward_available'] for item in results)}",
+        flush=True,
+    )
+    return results

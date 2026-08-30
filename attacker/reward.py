@@ -119,6 +119,7 @@ class RouteSelectorReward:
         )
         result = self._result(
             score,
+            choice=float(choice),
             choice_valid=1.0,
             gap_found=float(evaluation.gap_type != GapType.NONE),
             storage_gap=float(evaluation.gap_type == GapType.STORAGE),
@@ -146,8 +147,21 @@ class RouteSelectorReward:
             self.evaluate(response, context)
             for response, context in zip(responses, contexts, strict=True)
         ]
+        groups: dict[str, list[dict[str, float]]] = {}
+        if group_ids is not None:
+            for group_id, result in zip(group_ids, results, strict=True):
+                groups.setdefault(str(group_id), []).append(result)
         fields = {
             "samples": len(results),
+            "groups": len(groups),
+            "informative_groups": sum(
+                len({item["score"] for item in items}) > 1
+                for items in groups.values()
+            ),
+            "unique_choices": sum(
+                len({item["choice"] for item in items if item["choice_valid"]})
+                for items in groups.values()
+            ),
             "positive": sum(item["score"] > 0 for item in results),
             "unavailable": sum(not item["reward_available"] for item in results),
             "storage": sum(item["storage_gap"] > 0 for item in results),
@@ -178,6 +192,7 @@ class RouteSelectorReward:
         result = {
             "score": score,
             "reward_available": 1.0,
+            "choice": -1.0,
             "choice_valid": 0.0,
             "gap_found": 0.0,
             "storage_gap": 0.0,

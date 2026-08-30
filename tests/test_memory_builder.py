@@ -10,7 +10,8 @@ if "openai" not in sys.modules:
     sys.modules["openai"] = openai
 
 from attacker.models import OracleResult, SupportingEvidence
-from defender.memory_builder import MemoryBuilder
+from defender import verl_reward
+from defender.memory_builder import ActionSchemaError, MemoryBuilder
 from defender.models import MemoryBuilderObservation, MemoryBuilderRewardContext
 from defender.reward import MemoryBuilderReward
 from defender.reward_judge import DeepSeekMemoryJudge
@@ -27,6 +28,7 @@ from memory.store import MemoryStore
 from training.alternating import MemoryTrainingFlow, PendingMemoryEdit
 from training.stop_condition import CompactionAuditor, StopCondition, StopConfig
 from training.support_attribution import SupportAttributor
+from utils.json_output import StructuredOutputError
 
 
 class _Retriever:
@@ -113,6 +115,16 @@ def _observation(
 
 
 class MemoryBuilderTests(unittest.TestCase):
+    def test_action_parser_requires_one_clean_json_object(self):
+        builder = MemoryBuilder()
+        response = '{"operation":"add","targets":[],"content":"Kyoto"}'
+        self.assertEqual(
+            builder.parse_action(response, ()).operation,
+            MemoryOperation.ADD,
+        )
+        with self.assertRaises(ActionSchemaError):
+            builder.parse_action(f"prefix {response}", ())
+
     def test_memory_judge_has_only_three_boolean_decisions(self):
         client = types.SimpleNamespace(
             chat=types.SimpleNamespace(completions=_Completions())
@@ -159,6 +171,61 @@ class MemoryBuilderTests(unittest.TestCase):
         )
         self.assertFalse(reward._valid_action(add, context))
         self.assertTrue(reward._valid_action(merge, context))
+
+    def test_reward_reports_the_unavailable_stage(self):
+        class FailingAnswerAgent:
+            def answer_memories(self, question, memories):
+                raise StructuredOutputError("answer failed")
+
+        oracle = _oracle("Where will I visit?", "Kyoto", "new")
+        context = MemoryBuilderRewardContext.from_state(
+            _observation(oracle),
+            MemoryState.empty(),
+            oracle,
+            0.0,
+        )
+        reward = MemoryBuilderReward(
+            MemoryBuilder(),
+            FailingAnswerAgent(),
+            _Retriever(),
+            _AnswerJudge(),
+            _ValidEditJudge(),
+        ).evaluate(
+            '{"operation":"add","targets":[],"content":"Kyoto"}',
+            context,
+        )
+        self.assertEqual(reward["reward_available"], 0.0)
+        self.assertEqual(reward["edit_judge_available"], 1.0)
+        self.assertEqual(reward["answer_available"], 0.0)
+
+    def test_batch_reward_caches_duplicate_rollouts(self):
+        oracle = _oracle("Where will I visit?", "Kyoto", "new")
+        context = MemoryBuilderRewardContext.from_state(
+            _observation(oracle), MemoryState.empty(), oracle, 0.0
+        ).to_dict()
+
+        class Reward:
+            calls = 0
+
+            def evaluate(self, response, parsed_context):
+                self.calls += 1
+                return {"score": 1.0, "reward_available": 1.0}
+
+        previous = verl_reward._REWARD
+        reward = Reward()
+        try:
+            verl_reward._REWARD = reward
+            results = verl_reward.compute_score_batch(
+                ["memory_builder"] * 2,
+                ["same"] * 2,
+                [""] * 2,
+                [context] * 2,
+                ["group"] * 2,
+            )
+        finally:
+            verl_reward._REWARD = previous
+        self.assertEqual(len(results), 2)
+        self.assertEqual(reward.calls, 1)
 
     def test_provenance_is_deterministic_and_only_inherited_when_trusted(self):
         target = MemoryNode(

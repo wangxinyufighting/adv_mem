@@ -251,7 +251,7 @@ class RouteSelectorTests(unittest.TestCase):
         )
         self.assertIn('"probe_question"', record["prompt"][1]["content"])
 
-    def test_selector_shrinks_an_oversized_candidate_window(self):
+    def test_selector_builds_only_coverage_contrast_pairs(self):
         first = _probe()
         probes = tuple(
             replace(
@@ -262,23 +262,49 @@ class RouteSelectorTests(unittest.TestCase):
                     route_id=f"route-{index}",
                     route_signature=f"route-{index}",
                 ),
-                oracle=replace(first.oracle, route_id=f"route-{index}"),
+                oracle=replace(
+                    first.oracle,
+                    route_id=f"route-{index}",
+                    supporting_evidence=(
+                        SupportingEvidence(
+                            f"src-{index}",
+                            f"fact-{index}",
+                            "Kyoto",
+                            None,
+                            "user",
+                        ),
+                    ),
+                ),
             )
             for index in range(4)
         )
-
-        class Tokenizer:
-            def apply_chat_template(self, prompt, **kwargs):
-                choices = prompt[1]["content"].count('"choice"')
-                return range(2000 if choices > 2 else 100)
-
+        memory = MemoryState(
+            nodes={
+                f"memory-{index}": MemoryNode(
+                    f"memory-{index}",
+                    "Kyoto",
+                    provenance_node_ids=(f"fact-{index}",),
+                    source_ids=(f"src-{index}",),
+                )
+                for index in range(2)
+            }
+        )
         records = RouteSelectorDatasetBuilder(
             _Retriever(),
-            candidates_per_prompt=4,
-            tokenizer=Tokenizer(),
-            max_prompt_tokens=1000,
-        ).records(probes, MemoryState.empty())
+        ).records(probes, memory)
         self.assertEqual(len(records), 2)
+        self.assertTrue(
+            all(
+                record["prompt"][1]["content"].count('"choice"') == 2
+                for record in records
+            )
+        )
+        self.assertEqual(
+            RouteSelectorDatasetBuilder(_Retriever()).records(
+                probes, MemoryState.empty()
+            ),
+            (),
+        )
 
     def test_attack_history_is_backward_compatible_and_deduplicated(self):
         state = MemoryState.empty()

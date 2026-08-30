@@ -11,6 +11,7 @@ PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-8}
 PPO_MICRO_BATCH_SIZE=${PPO_MICRO_BATCH_SIZE:-4}
 ROLLOUT_N=${ROLLOUT_N:-4}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-1}
+MAX_RESPONSE_LENGTH=${MEMORY_BUILDER_MAX_RESPONSE_LENGTH:-256}
 CHECKPOINT_DIR=${CHECKPOINT_DIR:-${ROOT}/checkpoints/memory_builder}
 ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-${CHECKPOINT_DIR}/rollouts}
 VERL_HOME=${VERL_HOME:-${ROOT}/.verl-cu124-src}
@@ -26,7 +27,7 @@ cd "${VERL_HOME}"
     data.val_files="${VAL_FILE}" \
     data.train_batch_size="${TRAIN_BATCH_SIZE}" \
     data.max_prompt_length=4096 \
-    data.max_response_length=1024 \
+    data.max_response_length="${MAX_RESPONSE_LENGTH}" \
     data.filter_overlong_prompts=True \
     data.truncation=error \
     actor_rollout_ref.model.path="${MODEL_PATH}" \
@@ -49,7 +50,8 @@ cd "${VERL_HOME}"
     +actor_rollout_ref.ref.fsdp_config.model_dtype=bf16 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     custom_reward_function.path="${ROOT}/defender/verl_reward.py" \
-    custom_reward_function.name=compute_score \
+    custom_reward_function.name=compute_score_batch \
+    reward_model.reward_manager=batch \
     trainer.critic_warmup=0 \
     trainer.logger='["console", "swanlab"]' \
     trainer.project_name=adv_mem \

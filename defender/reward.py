@@ -81,19 +81,29 @@ class MemoryBuilderReward:
                 context.observation.new_evidence,
                 context.observation.memory_neighborhood,
             )
+        except (APIError, StructuredOutputError) as error:
+            return self._unavailable("edit_judge", error, growth, shrink)
+
+        try:
             after = self._correctness(context.oracle, temp)
+        except (APIError, StructuredOutputError) as error:
+            return self._unavailable(
+                "answer", error, growth, shrink, edit_judge_available=1.0
+            )
+
+        try:
             retention = tuple(
                 self._correctness(self._oracle(record), temp)
                 for record in self._protected(context)
             )
-        except (APIError, StructuredOutputError):
-            return self._result(
-                0.0,
-                reward_available=0.0,
-                schema_valid=1.0,
-                action_valid=1.0,
-                growth=growth,
-                shrink=shrink,
+        except (APIError, StructuredOutputError) as error:
+            return self._unavailable(
+                "retention",
+                error,
+                growth,
+                shrink,
+                edit_judge_available=1.0,
+                answer_available=1.0,
             )
 
         grounded = float(structure.grounded)
@@ -133,6 +143,32 @@ class MemoryBuilderReward:
             shrink=shrink,
             gain=gain,
             commit_valid=float(commit_valid),
+            edit_judge_available=1.0,
+            answer_available=1.0,
+            retention_available=1.0,
+        )
+
+    def _unavailable(
+        self,
+        stage: str,
+        error: Exception,
+        growth: float,
+        shrink: float,
+        **values: float,
+    ) -> dict[str, float]:
+        print(
+            f"Memory Builder Reward unavailable: stage={stage} "
+            f"error={type(error).__name__}: {error}",
+            flush=True,
+        )
+        return self._result(
+            0.0,
+            reward_available=0.0,
+            schema_valid=1.0,
+            action_valid=1.0,
+            growth=growth,
+            shrink=shrink,
+            **values,
         )
 
     def _valid_action(
@@ -228,6 +264,9 @@ class MemoryBuilderReward:
             "shrink": 0.0,
             "gain": 0.0,
             "commit_valid": 0.0,
+            "edit_judge_available": 0.0,
+            "answer_available": 0.0,
+            "retention_available": 0.0,
         }
         result.update(values)
         return result

@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from attacker.gap import support_coverage
 from attacker.graph_router import GraphRouterPolicy, NoRouteFoundError
 from attacker.models import AttackMode, MemoryGraphView, RouteProbe, RouterConfig
 from attacker.selector import RouteSelector
@@ -96,22 +97,18 @@ class RouteProposalBuilder:
 
 
 class RouteSelectorDatasetBuilder:
-    """Pack several validated probes into each GRPO route-selection prompt."""
+    """Build pairwise covered-versus-uncovered route prompts."""
 
     def __init__(
         self,
         retriever: Any,
         selector: RouteSelector | None = None,
-        candidates_per_prompt: int = 8,
         seed: int = 0,
         tokenizer: Any | None = None,
         max_prompt_tokens: int = 4096,
     ):
-        if candidates_per_prompt < 2:
-            raise ValueError("Route selection needs at least two candidates")
         self.retriever = retriever
         self.selector = selector or RouteSelector()
-        self.candidates_per_prompt = candidates_per_prompt
         self.seed = seed
         self.tokenizer = tokenizer
         self.max_prompt_tokens = max_prompt_tokens
@@ -121,22 +118,33 @@ class RouteSelectorDatasetBuilder:
         probes: tuple[RouteProbe, ...],
         memory: MemoryState,
     ) -> tuple[dict[str, Any], ...]:
+        covered = []
+        uncovered = []
+        for probe in probes:
+            target = (
+                covered
+                if support_coverage(probe, memory.active_nodes) >= 1.0
+                else uncovered
+            )
+            target.append(probe)
+        if not covered or not uncovered:
+            return ()
+
+        rng = random.Random(self.seed)
+        rng.shuffle(covered)
+        rng.shuffle(uncovered)
         records = []
-        shuffled = list(probes)
-        random.Random(self.seed).shuffle(shuffled)
-        while len(shuffled) >= 2:
-            size = min(len(shuffled), self.candidates_per_prompt)
-            while size >= 2:
-                window = tuple(shuffled[:size])
-                observation = self.selector.observe(window, memory, self.retriever)
-                record = self.selector.to_verl_record(observation, window, memory)
-                if self._fits(record):
-                    records.append(record)
-                    del shuffled[:size]
-                    break
-                size -= 1
-            else:
-                shuffled.pop(0)
+        for index in range(max(len(covered), len(uncovered))):
+            pair = [
+                covered[index % len(covered)],
+                uncovered[index % len(uncovered)],
+            ]
+            rng.shuffle(pair)
+            window = tuple(pair)
+            observation = self.selector.observe(window, memory, self.retriever)
+            record = self.selector.to_verl_record(observation, window, memory)
+            if self._fits(record):
+                records.append(record)
         return tuple(records)
 
     def _fits(self, record: dict[str, Any]) -> bool:
