@@ -20,6 +20,7 @@ prior assistant responses. A useful gap may be absent from memory, hard to retri
 or present but difficult to answer from. Use target, probe_question, known memory,
 and history together. Do not repeatedly select a route that has already produced no
 gap unless the memory version or known evidence has materially changed.
+When memory is sparse, prefer compact routes that add more distinct new evidence.
 
 Return exactly one JSON object and nothing else: {"choice": 0}. The choice must be
 one of the integer candidate choices shown in the input."""
@@ -86,10 +87,15 @@ class RouteSelector:
         observation: RouteSelectorObservation,
         probes: tuple[RouteProbe, ...],
         memory: MemoryState,
+        storage_values: tuple[float, ...] = (),
     ) -> dict[str, Any]:
         signature = "|".join(probe.route.route_id for probe in probes)
         group_id = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:20]
-        context = RouteSelectorRewardContext.from_state(probes, memory)
+        context = RouteSelectorRewardContext.from_state(
+            probes,
+            memory,
+            storage_values,
+        )
         return {
             "data_source": "route_selector",
             "prompt": self.build_prompt(observation),

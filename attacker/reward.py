@@ -107,8 +107,13 @@ class RouteSelectorReward:
         history = memory.attack_history.get(probe.route.route_id)
         attempts = history.attempts if history else 0
         exploration = 1.0 / math.sqrt(1.0 + attempts)
+        storage_value = (
+            context.storage_values[choice]
+            if len(context.storage_values) == len(context.probes)
+            else 1.0
+        )
         gap_reward = {
-            GapType.STORAGE: self.config.storage_gap_reward,
+            GapType.STORAGE: self.config.storage_gap_reward * storage_value,
             GapType.RETRIEVAL: self.config.retrieval_gap_reward,
             GapType.REASONING: self.config.reasoning_gap_reward,
             GapType.NONE: self.config.no_gap_reward,
@@ -129,12 +134,14 @@ class RouteSelectorReward:
             structural_coverage=evaluation.structural_coverage,
             retrieved_coverage=evaluation.retrieved_coverage,
             exploration=exploration,
+            storage_value=storage_value,
         )
         return self._finish(
             result,
             trace,
             stage=evaluation.gap_type.value,
             memory_answer=evaluation.memory_answer,
+            storage_value=storage_value,
         )
 
     def evaluate_batch(
@@ -167,6 +174,11 @@ class RouteSelectorReward:
             "storage": sum(item["storage_gap"] > 0 for item in results),
             "retrieval": sum(item["retrieval_gap"] > 0 for item in results),
             "reasoning": sum(item["reasoning_gap"] > 0 for item in results),
+            "storage_value": round(
+                sum(item["storage_value"] for item in results)
+                / max(1, len(results)),
+                3,
+            ),
         }
         print(
             "Route Selector Reward: "
@@ -202,6 +214,7 @@ class RouteSelectorReward:
             "structural_coverage": 0.0,
             "retrieved_coverage": 0.0,
             "exploration": 0.0,
+            "storage_value": 0.0,
         }
         result.update(values)
         result["format_valid"] = result["choice_valid"]

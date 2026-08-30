@@ -13,7 +13,7 @@ if "openai" not in sys.modules:
     openai.APIError = type("APIError", (Exception,), {})
     sys.modules["openai"] = openai
 
-from attacker.gap import GapEvaluation, GapEvaluator, GapType
+from attacker.gap import GapEvaluation, GapEvaluator, GapType, storage_values
 from attacker.oracle import DeepSeekOracle
 from attacker.models import (
     AttackMode,
@@ -196,6 +196,47 @@ class RouteSelectorTests(unittest.TestCase):
         self.assertEqual(evaluator.calls, 1)
         self.assertEqual(reward.evaluate('{"choice": 1}', context)["score"], -1.0)
 
+    def test_storage_value_breaks_cold_start_reward_ties(self):
+        first = _probe()
+        second = replace(
+            first,
+            question_id="question-2",
+            route=replace(first.route, route_id="route-2"),
+            oracle=replace(first.oracle, route_id="route-2"),
+        )
+        context = RouteSelectorRewardContext.from_state(
+            (first, second),
+            MemoryState.empty(),
+            (0.25, 1.0),
+        )
+
+        class Evaluator:
+            def evaluate(self, probe, memory):
+                return GapEvaluation(GapType.STORAGE, 0.0, (), None, 0.0, 0.0)
+
+        reward = RouteSelectorReward(Evaluator())
+        low = reward.evaluate('{"choice":0}', context)["score"]
+        high = reward.evaluate('{"choice":1}', context)["score"]
+        self.assertGreater(high, low)
+
+    def test_storage_value_rewards_more_novel_evidence(self):
+        first = _probe()
+        second = replace(
+            first,
+            question_id="question-2",
+            route=replace(first.route, route_id="route-2"),
+            oracle=replace(
+                first.oracle,
+                route_id="route-2",
+                supporting_evidence=(
+                    SupportingEvidence("src-2", "fact-2", "Osaka", None, "user"),
+                    SupportingEvidence("src-3", "fact-3", "Nara", None, "user"),
+                ),
+            ),
+        )
+        low, high = storage_values((first, second), MemoryState.empty())
+        self.assertGreater(high, low)
+
     def test_semantic_judge_only_requests_supplied_answer_labels(self):
         captured = {}
 
@@ -251,7 +292,7 @@ class RouteSelectorTests(unittest.TestCase):
         )
         self.assertIn('"probe_question"', record["prompt"][1]["content"])
 
-    def test_selector_builds_only_coverage_contrast_pairs(self):
+    def test_selector_builds_contrast_pairs_from_empty_memory(self):
         first = _probe()
         probes = tuple(
             replace(
@@ -299,11 +340,16 @@ class RouteSelectorTests(unittest.TestCase):
                 for record in records
             )
         )
-        self.assertEqual(
-            RouteSelectorDatasetBuilder(_Retriever()).records(
-                probes, MemoryState.empty()
-            ),
-            (),
+        cold = RouteSelectorDatasetBuilder(_Retriever()).records(
+            probes,
+            MemoryState.empty(),
+        )
+        self.assertEqual(len(cold), 2)
+        self.assertTrue(
+            all(
+                len(record["extra_info"]["storage_values"]) == 2
+                for record in cold
+            )
         )
 
     def test_attack_history_is_backward_compatible_and_deduplicated(self):

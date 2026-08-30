@@ -5,6 +5,7 @@ from typing import Any
 from attacker.answer_agent import is_insufficient_answer
 from attacker.models import RouteProbe
 from memory.models import MemoryNode, MemoryState
+from memory.store import estimate_token_count
 
 
 class GapType(str, Enum):
@@ -123,6 +124,32 @@ def support_coverage(
         else 0.0
     )
     return max(node_score, source_score)
+
+
+def storage_values(
+    probes: tuple[RouteProbe, ...],
+    memory: MemoryState,
+) -> tuple[float, ...]:
+    """Estimate marginal new evidence per storage token."""
+    nodes = {
+        node_id for item in memory.active_nodes for node_id in item.provenance_node_ids
+    }
+    sources = {
+        source_id for item in memory.active_nodes for source_id in item.source_ids
+    }
+    raw = []
+    for probe in probes:
+        novel = {
+            (item.node_id, item.source_id): item
+            for item in probe.oracle.supporting_evidence
+            if item.node_id not in nodes and item.source_id not in sources
+        }
+        tokens = sum(
+            estimate_token_count(item.quote) for item in novel.values()
+        )
+        raw.append(len(novel) / max(1, tokens) ** 0.5)
+    scale = max(raw, default=0.0)
+    return tuple(value / scale if scale else 0.0 for value in raw)
 
 
 def _failed_gap(structural: float, retrieved: float) -> GapType:

@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from attacker.gap import support_coverage
+from attacker.gap import storage_values, support_coverage
 from attacker.graph_router import GraphRouterPolicy, NoRouteFoundError
 from attacker.models import AttackMode, MemoryGraphView, RouteProbe, RouterConfig
 from attacker.selector import RouteSelector
@@ -97,7 +97,7 @@ class RouteProposalBuilder:
 
 
 class RouteSelectorDatasetBuilder:
-    """Build pairwise covered-versus-uncovered route prompts."""
+    """Build pairwise route-value contrast prompts."""
 
     def __init__(
         self,
@@ -118,6 +118,14 @@ class RouteSelectorDatasetBuilder:
         probes: tuple[RouteProbe, ...],
         memory: MemoryState,
     ) -> tuple[dict[str, Any], ...]:
+        values = {
+            probe.route.route_id: value
+            for probe, value in zip(
+                probes,
+                storage_values(probes, memory),
+                strict=True,
+            )
+        }
         covered = []
         uncovered = []
         for probe in probes:
@@ -127,22 +135,36 @@ class RouteSelectorDatasetBuilder:
                 else uncovered
             )
             target.append(probe)
-        if not covered or not uncovered:
-            return ()
 
         rng = random.Random(self.seed)
         rng.shuffle(covered)
         rng.shuffle(uncovered)
-        records = []
-        for index in range(max(len(covered), len(uncovered))):
-            pair = [
-                covered[index % len(covered)],
-                uncovered[index % len(uncovered)],
+        if covered and uncovered:
+            pairs = [
+                (
+                    covered[index % len(covered)],
+                    uncovered[index % len(uncovered)],
+                )
+                for index in range(max(len(covered), len(uncovered)))
             ]
+        else:
+            ranked = sorted(probes, key=lambda item: values[item.route.route_id])
+            pairs = []
+            while len(ranked) >= 2:
+                pairs.append((ranked.pop(0), ranked.pop()))
+
+        records = []
+        for pair in pairs:
+            pair = list(pair)
             rng.shuffle(pair)
             window = tuple(pair)
             observation = self.selector.observe(window, memory, self.retriever)
-            record = self.selector.to_verl_record(observation, window, memory)
+            record = self.selector.to_verl_record(
+                observation,
+                window,
+                memory,
+                tuple(values[item.route.route_id] for item in window),
+            )
             if self._fits(record):
                 records.append(record)
         return tuple(records)

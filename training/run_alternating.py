@@ -1,7 +1,6 @@
 import argparse
 import os
 import random
-from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -158,26 +157,20 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             )
         else:
             print(
-                f"Round {round_index}: skipping Route Selector; "
-                "no covered-versus-uncovered route pairs"
+                f"Round {round_index}: no trainable Route Selector prompts"
             )
 
         audit_proposal_builder = RouteProposalBuilder(
             reader,
             seed=args.seed + 100_000 + round_index,
         )
-        attacker_server = (
-            VLLMPolicyServer(
-                runner.verl_dir,
-                state.attacker_model,
-                config.policy_port,
-                round_dir / "attacker_server.log",
-                config.gpu_memory_utilization,
-            )
-            if attacker_records
-            else nullcontext(None)
-        )
-        with attacker_server as policy:
+        with VLLMPolicyServer(
+            runner.verl_dir,
+            state.attacker_model,
+            config.policy_port,
+            round_dir / "attacker_server.log",
+            config.gpu_memory_utilization,
+        ) as policy:
             candidates_by_case = {}
             fresh_by_case = {}
             for case_index, case_state in active_cases.items():
@@ -211,17 +204,13 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 random.Random(
                     args.seed + 200_000 + round_index * 10_000 + case_index
                 ).shuffle(unseen)
-                fresh = (
-                    selector.select_many(
-                        policy,
-                        tuple(unseen),
-                        case_state.memory,
-                        retriever,
-                        fresh_count,
-                        config.selector_candidates,
-                    )
-                    if policy is not None and case_state.memory.active_nodes
-                    else tuple(unseen[:fresh_count])
+                fresh = selector.select_many(
+                    policy,
+                    tuple(unseen),
+                    case_state.memory,
+                    retriever,
+                    fresh_count,
+                    config.selector_candidates,
                 )
                 candidates_by_case[case_index] = high_priority + fresh
                 fresh_by_case[case_index] = fresh

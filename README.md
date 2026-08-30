@@ -147,12 +147,13 @@ bash train.sh --rounds 20
 - Full Graph：`data/longmemeval/memory_graph_fullgraph5.json`
 - Backbone：`Qwen/Qwen3-0.6B`
 - 每个 case 提出 16 条候选 Route
-- 每个 Route Selector prompt 对比 2 条 Route（已覆盖 / 未覆盖）
+- 每个 Route Selector prompt 对比 2 条 Route
 - 每轮为每个 case 处理 8 个 Question
 - Route Selector 和 Memory Builder 各训练 2 epoch，batch size 为 2
 
-空记忆阶段跳过 Route Selector，先随机抽取有效 Route 训练 Memory Builder；
-只有同时存在已覆盖和未覆盖 Route 时才训练 Route Selector。
+Route Selector 从空记忆阶段开始训练并负责选路。此时 `storage_gap` 的奖励按
+新增 evidence 密度区分；记忆建立后再结合真实 gap 类型、coverage 和历史攻击
+结果选路。
 
 常用参数：
 
