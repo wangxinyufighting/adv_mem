@@ -6,9 +6,9 @@ from typing import Any, Iterable
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from attacker.attacker import Attacker
 from attacker.graph_router import GraphRouterPolicy, NoRouteFoundError
-from attacker.models import AttackMode, MemoryGraphView, RouterConfig
+from attacker.models import AttackMode, MemoryGraphView, RouteProbe, RouterConfig
+from attacker.selector import RouteSelector
 from defender.memory_builder import MemoryBuilder
 from memory.models import MemoryState
 from training.alternating import PendingMemoryEdit
@@ -61,34 +61,16 @@ def write_verl_dataset(
     )
 
 
-class AttackerDatasetBuilder:
-    """Sample Full Memory Graph routes and freeze the current M_t in each record."""
+class RouteProposalBuilder:
+    """Generate structurally valid route candidates without choosing an attack."""
 
     def __init__(
         self,
         reader: LongMemEvalGraphReader,
-        retriever: Any,
-        attacker: Attacker | None = None,
         seed: int = 0,
-        tokenizer: Any | None = None,
-        max_prompt_tokens: int = 4096,
     ):
         self.reader = reader
-        self.retriever = retriever
-        self.attacker = attacker or Attacker()
         self.seed = seed
-        self.tokenizer = tokenizer
-        self.max_prompt_tokens = max_prompt_tokens
-        self.stats = {
-            stage: {mode.value: 0 for mode in AttackMode}
-            for stage in (
-                "sampled",
-                "unique",
-                "attempted",
-                "within_limit",
-                "selected",
-            )
-        }
 
     def routes(self, case_index: int, count: int) -> tuple:
         config = RouterConfig(random_seed=self.seed, fallback_to_single_fact=False)
@@ -112,44 +94,45 @@ class AttackerDatasetBuilder:
                 break
         return tuple(routes)
 
+
+class RouteSelectorDatasetBuilder:
+    """Pack several validated probes into each GRPO route-selection prompt."""
+
+    def __init__(
+        self,
+        retriever: Any,
+        selector: RouteSelector | None = None,
+        candidates_per_prompt: int = 8,
+        seed: int = 0,
+        tokenizer: Any | None = None,
+        max_prompt_tokens: int = 4096,
+    ):
+        if candidates_per_prompt < 2:
+            raise ValueError("Route selection needs at least two candidates")
+        self.retriever = retriever
+        self.selector = selector or RouteSelector()
+        self.candidates_per_prompt = candidates_per_prompt
+        self.seed = seed
+        self.tokenizer = tokenizer
+        self.max_prompt_tokens = max_prompt_tokens
+
     def records(
         self,
-        case_index: int,
+        probes: tuple[RouteProbe, ...],
         memory: MemoryState,
-        count: int,
     ) -> tuple[dict[str, Any], ...]:
-        buckets = {mode: [] for mode in AttackMode}
-        for route in self.routes(case_index, count * len(AttackMode)):
-            mode = route.attack_mode.value
-            self.stats["sampled"][mode] += 1
-            self.stats["unique"][mode] += 1
-            buckets[route.attack_mode].append(route)
-
-        selected = []
-        offsets = {mode: 0 for mode in AttackMode}
-        while len(selected) < count:
-            added = False
-            for mode in AttackMode:
-                while offsets[mode] < len(buckets[mode]):
-                    route = buckets[mode][offsets[mode]]
-                    offsets[mode] += 1
-                    self.stats["attempted"][mode.value] += 1
-                    record = self.attacker.to_verl_record(
-                        self.attacker.observe(route, memory, self.retriever),
-                        memory,
-                    )
-                    if not self._fits(record):
-                        continue
-                    selected.append(record)
-                    self.stats["within_limit"][mode.value] += 1
-                    self.stats["selected"][mode.value] += 1
-                    added = True
-                    break
-                if len(selected) == count:
-                    break
-            if not added:
-                break
-        return tuple(selected)
+        records = []
+        shuffled = list(probes)
+        random.Random(self.seed).shuffle(shuffled)
+        for offset in range(0, len(shuffled), self.candidates_per_prompt):
+            window = tuple(shuffled[offset : offset + self.candidates_per_prompt])
+            if len(window) < 2:
+                continue
+            observation = self.selector.observe(window, memory, self.retriever)
+            record = self.selector.to_verl_record(observation, window, memory)
+            if self._fits(record):
+                records.append(record)
+        return tuple(records)
 
     def _fits(self, record: dict[str, Any]) -> bool:
         if self.tokenizer is None:
@@ -160,6 +143,10 @@ class AttackerDatasetBuilder:
             add_generation_prompt=True,
         )
         return len(tokens) <= self.max_prompt_tokens
+
+
+# The old name remains importable, but now denotes proposal generation only.
+AttackerDatasetBuilder = RouteProposalBuilder
 
 
 def memory_builder_records(

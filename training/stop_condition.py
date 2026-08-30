@@ -207,7 +207,7 @@ class CompactionAuditor:
             return 0.0, ()
         judged = self.answer_judge.evaluate(
             candidate.oracle,
-            candidate.golden_answer,
+            None,
             answer,
         )
         memories = tuple(result.node for result in results)

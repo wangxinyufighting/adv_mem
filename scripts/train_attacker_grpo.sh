@@ -12,7 +12,7 @@ PPO_MICRO_BATCH_SIZE=${PPO_MICRO_BATCH_SIZE:-4}
 ROLLOUT_N=${ROLLOUT_N:-8}
 TOTAL_EPOCHS=${TOTAL_EPOCHS:-1}
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-4096}
-MAX_RESPONSE_LENGTH=${ATTACKER_MAX_RESPONSE_LENGTH:-128}
+MAX_RESPONSE_LENGTH=${ATTACKER_MAX_RESPONSE_LENGTH:-64}
 CHECKPOINT_DIR=${CHECKPOINT_DIR:-${ROOT}/checkpoints/attacker}
 ROLLOUT_DATA_DIR=${ROLLOUT_DATA_DIR:-${CHECKPOINT_DIR}/rollouts}
 VERL_HOME=${VERL_HOME:-${ROOT}/.verl-cu124-src}
@@ -56,7 +56,7 @@ cd "${VERL_HOME}"
     trainer.critic_warmup=0 \
     trainer.logger='["console", "swanlab"]' \
     trainer.project_name=adv_mem \
-    trainer.experiment_name=attacker_qwen3_0.6b_grpo \
+    trainer.experiment_name=route_selector_qwen3_0.6b_grpo \
     trainer.default_local_dir="${CHECKPOINT_DIR}" \
     trainer.rollout_data_dir="${ROLLOUT_DATA_DIR}" \
     trainer.n_gpus_per_node="${NGPUS}" \

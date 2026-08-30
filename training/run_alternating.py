@@ -1,24 +1,17 @@
 import argparse
-import hashlib
 import os
-from dataclasses import dataclass, replace
+import random
+from dataclasses import dataclass
 from pathlib import Path
 
-from attacker.answer_agent import QwenAnswerAgent, is_insufficient_answer
-from attacker.attacker import Attacker
-from attacker.models import GraphRouteBundle
+from attacker.answer_agent import QwenAnswerAgent
 from attacker.oracle import DeepSeekOracle
+from attacker.probe import FixedProbeQuestionGenerator, ProbeFactory
 from attacker.reward_judge import DeepSeekRewardJudge
-from attacker.validation import (
-    answer_is_leaked,
-    ensure_question_mark,
-    question_constraint_error,
-    route_fidelity,
-)
+from attacker.selector import RouteSelector
 from defender.memory_builder import MemoryBuilder
 from defender.reward import MemoryBuilderReward
 from defender.reward_judge import DeepSeekMemoryJudge
-from memory.models import MemoryState
 from memory.store import MemoryStore
 from training.alternating import (
     MemoryTrainingFlow,
@@ -26,11 +19,12 @@ from training.alternating import (
     QuestionCandidate,
 )
 from training.dataset_builder import (
-    AttackerDatasetBuilder,
+    RouteProposalBuilder,
+    RouteSelectorDatasetBuilder,
     memory_builder_records,
     write_verl_dataset,
 )
-from training.policy_server import ChatPolicy, VLLMPolicyServer
+from training.policy_server import VLLMPolicyServer
 from training.run_state import RunState
 from training.stop_condition import (
     CompactionAuditor,
@@ -39,7 +33,6 @@ from training.stop_condition import (
 )
 from training.verl_runner import VerlConfig, VerlRunner
 from utils.longmemeval_graph_reader import LongMemEvalGraphReader
-from utils.json_output import StructuredOutputError
 from utils.memory_retrieval import HybridMemoryRetriever
 
 
@@ -54,6 +47,7 @@ class RunConfig:
     work_dir: Path
     policy_port: int
     gpu_memory_utilization: float
+    selector_candidates: int
 
 
 @dataclass
@@ -71,100 +65,6 @@ class CaseRound:
     compaction_attempts: int = 0
 
 
-class QuestionCollector:
-    """Apply Oracle, golden-corpus, and parametric-knowledge filters."""
-
-    def __init__(
-        self,
-        attacker: Attacker,
-        oracle: DeepSeekOracle,
-        answer_agent: QwenAnswerAgent,
-        judge: DeepSeekRewardJudge,
-        value_threshold: float = 0.5,
-        parametric_threshold: float = 0.8,
-        route_threshold: float = 0.8,
-    ):
-        self.attacker = attacker
-        self.oracle = oracle
-        self.answer_agent = answer_agent
-        self.judge = judge
-        self.value_threshold = value_threshold
-        self.parametric_threshold = parametric_threshold
-        self.route_threshold = route_threshold
-
-    def collect(
-        self,
-        policy: ChatPolicy,
-        routes: tuple[GraphRouteBundle, ...],
-        memory: MemoryState,
-        retriever: HybridMemoryRetriever,
-        count: int,
-        prior_questions: set[str],
-    ) -> tuple[QuestionCandidate, ...]:
-        if count == 0:
-            return ()
-        candidates = []
-        for route in routes:
-            observation = self.attacker.observe(route, memory, retriever)
-            response = policy.generate(self.attacker.build_prompt(observation), 128)
-            try:
-                question = self.attacker.parse_question(response)
-            except (ValueError, KeyError, TypeError):
-                continue
-            normalized = self.attacker.normalize_question(question)
-            if (
-                question_constraint_error(question, route)
-                or normalized in prior_questions
-            ):
-                continue
-
-            try:
-                oracle = self.oracle.evaluate(question, route)
-                if not oracle.valid:
-                    continue
-                if answer_is_leaked(question, oracle.answer):
-                    continue
-                if route_fidelity(route, oracle) < self.route_threshold:
-                    continue
-                golden_answer = self.answer_agent.answer_sources(
-                    question,
-                    route.source_records,
-                )
-                if is_insufficient_answer(golden_answer):
-                    continue
-                parametric_answer = self.answer_agent.answer_question(question)
-                judged = self.judge.evaluate(
-                    oracle,
-                    golden_answer,
-                    "INSUFFICIENT_INFORMATION",
-                    parametric_answer,
-                )
-            except StructuredOutputError:
-                continue
-            if (
-                judged.gold_correctness < 0.8
-                or judged.value < self.value_threshold
-                or (
-                    not is_insufficient_answer(parametric_answer)
-                    and judged.parametric_correctness >= self.parametric_threshold
-                )
-            ):
-                continue
-
-            question = ensure_question_mark(question)
-            oracle = replace(oracle, question=question)
-            question_id = hashlib.sha256(
-                f"{route.route_id}\n{question}".encode()
-            ).hexdigest()[:20]
-            candidates.append(
-                QuestionCandidate(question_id, route, oracle, golden_answer)
-            )
-            prior_questions.add(normalized)
-            if len(candidates) == count:
-                break
-        return tuple(candidates)
-
-
 def run(config: RunConfig, args: argparse.Namespace) -> None:
     from transformers import AutoTokenizer
 
@@ -172,12 +72,17 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
     reader = LongMemEvalGraphReader(args.graph, args.longmemeval, args.graph_version)
     state = RunState.load(state_path, args.model, reader.available_cases())
     retriever = HybridMemoryRetriever.from_env()
-    attacker = Attacker()
+    selector = RouteSelector()
     builder = MemoryBuilder()
     answer_agent = QwenAnswerAgent.from_env()
     answer_judge = DeepSeekRewardJudge.from_env()
     oracle = DeepSeekOracle()
-    collector = QuestionCollector(attacker, oracle, answer_agent, answer_judge)
+    probe_factory = ProbeFactory(
+        FixedProbeQuestionGenerator.from_env(),
+        oracle,
+        answer_agent,
+        answer_judge,
+    )
     stop_config = StopConfig(
         patience=args.stop_patience,
         min_valid_questions=args.stop_min_valid,
@@ -205,32 +110,42 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             break
 
         round_dir = config.work_dir / f"round_{round_index:03d}"
-        route_builder = AttackerDatasetBuilder(
+        proposal_builder = RouteProposalBuilder(
             reader,
+            seed=args.seed + round_index,
+        )
+        selector_data_builder = RouteSelectorDatasetBuilder(
             retriever,
-            attacker,
+            selector,
+            candidates_per_prompt=config.selector_candidates,
             seed=args.seed + round_index,
             tokenizer=tokenizer,
             max_prompt_tokens=args.max_prompt_length,
         )
-        attacker_records = tuple(
-            record
-            for case_index, case_state in active_cases.items()
-            for record in route_builder.records(
-                case_index,
-                case_state.memory,
-                config.routes_per_case,
+        training_probes = {}
+        attacker_records = []
+        for case_index, case_state in active_cases.items():
+            routes = proposal_builder.routes(case_index, config.routes_per_case)
+            probes = probe_factory.build_many(
+                routes,
+                tuple(case_state.questions.values()),
             )
-        )
+            training_probes[case_index] = probes
+            case_state.questions.update(
+                {probe.question_id: probe for probe in probes}
+            )
+            attacker_records.extend(
+                selector_data_builder.records(probes, case_state.memory)
+            )
         attacker_data = write_verl_dataset(
             attacker_records,
             round_dir / "attacker_data",
             seed=args.seed + round_index,
         )
-        print(f"Round {round_index}: route samples {route_builder.stats}")
         print(
-            f"Round {round_index}: training Attacker on "
-            f"{attacker_data.train_size} prompts {attacker_data.train_modes}"
+            f"Round {round_index}: training Route Selector on "
+            f"{attacker_data.train_size} prompts from "
+            f"{sum(len(items) for items in training_probes.values())} probes"
         )
         state.attacker_model = runner.train(
             "attacker",
@@ -239,10 +154,8 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             round_dir / "attacker",
         )
 
-        audit_route_builder = AttackerDatasetBuilder(
+        audit_proposal_builder = RouteProposalBuilder(
             reader,
-            retriever,
-            attacker,
             seed=args.seed + 100_000 + round_index,
         )
         with VLLMPolicyServer(
@@ -255,33 +168,43 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             candidates_by_case = {}
             fresh_by_case = {}
             for case_index, case_state in active_cases.items():
+                max_priority = max(0, config.candidates_per_case // 2)
                 high_priority = tuple(
                     case_state.questions[question_id]
                     for question_id in case_state.memory.high_priority_buffer
                     if question_id in case_state.questions
-                )[: config.candidates_per_case]
+                )[:max_priority]
                 fresh_count = config.candidates_per_case - len(high_priority)
-                routes = audit_route_builder.routes(
+                routes = audit_proposal_builder.routes(
                     case_index,
-                    fresh_count * 5,
+                    max(config.routes_per_case, fresh_count * 2),
                 )
-                fresh = collector.collect(
-                    policy,
+                pool = probe_factory.build_many(
                     routes,
+                    tuple(case_state.questions.values()),
+                )
+                case_state.questions.update(
+                    {probe.question_id: probe for probe in pool}
+                )
+                unseen = [
+                    probe
+                    for probe in pool
+                    if probe.question_id
+                    not in case_state.memory.capability_ledger
+                ]
+                random.Random(
+                    args.seed + 200_000 + round_index * 10_000 + case_index
+                ).shuffle(unseen)
+                fresh = selector.select_many(
+                    policy,
+                    tuple(unseen),
                     case_state.memory,
                     retriever,
                     fresh_count,
-                    {
-                        attacker.normalize_question(item.oracle.question)
-                        for item in case_state.questions.values()
-                    },
-                )
-                case_state.questions.update(
-                    {item.question_id: item for item in fresh}
+                    config.selector_candidates,
                 )
                 candidates_by_case[case_index] = high_priority + fresh
                 fresh_by_case[case_index] = fresh
-
         case_rounds = {}
         builder_records = []
         for case_index, case_state in active_cases.items():
@@ -493,6 +416,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--work-dir", type=Path, default=ROOT / "data/training")
     parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--routes-per-case", type=int, default=16)
+    parser.add_argument("--selector-candidates", type=int, default=8)
     parser.add_argument("--candidates-per-case", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -516,6 +440,7 @@ def main() -> None:
         work_dir=args.work_dir,
         policy_port=args.policy_port,
         gpu_memory_utilization=args.gpu_memory_utilization,
+        selector_candidates=args.selector_candidates,
     )
     run(config, args)
 

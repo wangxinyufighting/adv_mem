@@ -11,6 +11,7 @@ from memory.models import (
     MemoryOperation,
     MemoryState,
     MemoryStatus,
+    RouteAttackStats,
 )
 
 
@@ -138,6 +139,28 @@ class MemoryStore:
 
     def record_capability(self, record: CapabilityRecord) -> None:
         self.state.capability_ledger[record.question_id] = record
+
+    def record_route_attack(self, route_id: str, gap: str) -> None:
+        """Record at most one identical outcome per memory version."""
+        current = self.state.attack_history.get(route_id, RouteAttackStats(route_id))
+        if (
+            current.last_memory_version == self.state.version
+            and current.last_gap == gap
+        ):
+            return
+        counts = {
+            "storage_gap": "storage_gaps",
+            "retrieval_gap": "retrieval_gaps",
+            "reasoning_gap": "reasoning_gaps",
+            "none": "no_gaps",
+        }
+        field = counts[gap]
+        values = current.to_dict()
+        values["attempts"] += 1
+        values[field] += 1
+        values["last_memory_version"] = self.state.version
+        values["last_gap"] = gap
+        self.state.attack_history[route_id] = RouteAttackStats.from_dict(values)
 
     def mark_success(
         self,

@@ -32,7 +32,7 @@ class SupportAttributor:
             try:
                 correctness = self.answer_judge.evaluate(
                     oracle,
-                    golden_answer,
+                    None,
                     answer,
                 ).memory_correctness
             except StructuredOutputError:

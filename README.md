@@ -1,20 +1,20 @@
 # AdvMem Training
 
-AdvMem 通过交替 GRPO 训练 Attacker 和 Memory Builder。Attacker 寻找当前记忆
-`M_t` 缺失的能力，Memory Builder 通过编辑记忆修复这些能力。
-
-完整的代码文件职责、组件接口和全部 Prompt 位置见
-[`CODE_GUIDE.md`](CODE_GUIDE.md)。
+AdvMem 通过交替 GRPO 训练 Route Selector 和 Memory Builder。Graph Router 只
+提出结构合法的候选路径；Route Selector 根据当前记忆 `M_t`、候选证据、固定
+Probe Question 和历史攻击结果，学习选择最可能暴露缺口的路径。Memory Builder
+再通过编辑记忆修复这些能力。
 
 ## 训练流程
 
 ```text
 Full Memory Graph
-  → Graph Router 采样 Route
-  → 构建 Attacker Parquet
-  → Verl GRPO 训练 Attacker
-  → Attacker 生成 Question
-  → Oracle 验证并生成标准答案和 Evidence
+  → Graph Router 提出候选 Route Pool
+  → 冻结生成器为新 Route 生成一次 Probe Question
+  → Oracle 验证并缓存标准答案和 Evidence
+  → 每个 GRPO Prompt 同时包含多条候选 Route
+  → Verl GRPO 训练 Route Selector 选择攻击位置
+  → 按 provenance 区分 Storage / Retrieval / Reasoning Gap
   → Answer Agent 依次使用 Golden Corpus、无上下文和 M_t 回答
   → 无上下文已能回答或 Golden Corpus 仍不能回答：丢弃 Question
   → M_t 回答正确：写入 Success Pool
@@ -26,8 +26,20 @@ Full Memory Graph
   → 连续多轮无有效攻击且无无损压缩：停止
 ```
 
-Attacker 和 Memory Builder 按轮次交替训练，不同时更新。Retrieval 在训练和
-测试中始终使用同一套实现。
+Route Selector 和 Memory Builder 按轮次交替训练，不同时更新。Probe Question
+一经 Oracle 验证便按 Route 缓存，不参与 GRPO 更新，因此 Route 的 reward 不会
+被问题措辞混淆。Retrieval 在训练和测试中始终使用同一套实现。
+
+## 缺口定义
+
+- `storage_gap`：Oracle 所需 provenance/source 未被当前 active memory 覆盖。
+- `retrieval_gap`：支持信息存在于 `M_t`，但没有完整进入固定 top-k。
+- `reasoning_gap`：支持信息已检索到，但固定 Answer Agent 仍回答错误。
+- `none`：固定 Answer Agent 能从 `M_t` 正确回答。
+
+Route Selector 的主 reward 来自缺口类型，另加随历史尝试次数衰减的探索奖励。
+Question validity、标准答案和 evidence 在 Probe 创建阶段完成，不再由每个 rollout
+重复判断。
 
 ## 环境
 
@@ -61,6 +73,7 @@ bash scripts/setup_cuda124.sh
 训练前需要以下服务：
 
 - DeepSeek：Oracle、Reward Judge 和 Retrieval Query Parser。
+- DeepSeek（默认）：冻结的 Probe Question Generator；可配置为其他兼容接口。
 - Qwen3-0.6B：固定的 Answer Agent。
 - `text-embedding-v4`：Memory Retrieval embedding。
 - BGE Reranker：提供 `/v1/rerank` 接口。
@@ -71,6 +84,11 @@ bash scripts/setup_cuda124.sh
 export DEEPSEEK_API_KEY=xxxx
 export DEEPSEEK_API_BASE=https://api.deepseek.com
 export DEEPSEEK_MODEL=deepseek-chat
+
+# 可选；留空时复用 DEEPSEEK_*。
+export PROBE_GENERATOR_API_KEY=
+export PROBE_GENERATOR_API_BASE=
+export PROBE_GENERATOR_MODEL=
 
 export MOS_EMBEDDER_API_KEY=xxxx
 export MOS_EMBEDDER_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -120,9 +138,10 @@ bash train.sh --rounds 20
 
 - Full Graph：`data/longmemeval/memory_graph_fullgraph5.json`
 - Backbone：`Qwen/Qwen3-0.6B`
-- 每个 case 采样 16 条 Route
+- 每个 case 提出 16 条候选 Route
+- 每个 Route Selector prompt 包含 8 条候选 Route
 - 每轮为每个 case 处理 8 个 Question
-- Attacker 和 Memory Builder 各训练 1 epoch
+- Route Selector 和 Memory Builder 各训练 1 epoch
 
 常用参数：
 
@@ -130,6 +149,7 @@ bash train.sh --rounds 20
 bash train.sh \
   --rounds 5 \
   --routes-per-case 16 \
+  --selector-candidates 8 \
   --candidates-per-case 8 \
   --epochs 1 \
   --batch-size 8 \
@@ -142,7 +162,8 @@ bash train.sh \
 
 每个 case 独立计算 Stop Condition，需要连续 `--stop-patience` 轮同时满足：
 
-- 至少 `--stop-min-valid` 个独立审计问题都能由 `M_t` 回答，且
+- 至少 `--stop-min-valid` 个由 Selector 在新 Route Pool 中选出的独立 Probe
+  都能由 `M_t` 回答，且
   High-Priority Buffer 为空。
 - Memory Builder 在指定数量的 neighborhood 中找不到不引起
   `linked_questions` 回归的 DELETE/MERGE。
@@ -166,10 +187,17 @@ Full Graph 不会直接交给 Verl。数据经过以下组件转换：
 ```text
 LongMemEvalGraphReader
   → GraphRouterPolicy
-  → AttackerDatasetBuilder
+  → RouteProposalBuilder
+  → ProbeFactory
+  → RouteSelectorDatasetBuilder
   → write_verl_dataset
   → train.parquet / val.parquet
 ```
+
+`RouteProposalBuilder` 不决定最终攻击目标。`RouteSelectorDatasetBuilder` 将多条
+Route 组成同一个 prompt，使同一 GRPO group 的 rollout 能比较不同攻击位置。
+旧版 `run_state.json` 可以读取；检测到旧 Question-Attacker checkpoint 时会保留
+Memory Builder 与记忆状态，但从 `--model` 重新初始化 Route Selector。
 
 Memory Builder 数据由防御失败的 `PendingMemoryEdit` 构建：
 
@@ -188,7 +216,7 @@ data/training/
   run_state.json
   round_000/
     attacker_data/
-    attacker/checkpoints/
+    attacker/checkpoints/  # Route Selector
       rollouts/
         <step>.jsonl
         reward_trace.jsonl
@@ -203,15 +231,16 @@ data/training/
 
 `services/training.log` 保存本次启动的终端日志，再次启动时会覆盖旧日志。
 Answer Agent 和 Reranker 日志也保存在 `services/` 中。
-`rollouts/<step>.jsonl` 保存 prompt、模型输出和 reward 分项；Attacker 的
-`reward_trace.jsonl` 额外保存 Oracle 原因、标准答案和 Memory Answer。
+`rollouts/<step>.jsonl` 保存 prompt、模型输出和 reward 分项；Route Selector 的
+`reward_trace.jsonl` 额外保存 route choice、gap type、coverage 和 Memory Answer。
 
 `run_state.json` 保存：
 
 - 每个 case 独立的 `M_t`
-- 每个 case 独立的 Success Pool、High-Priority Buffer 和问题档案
+- 每个 case 独立的 Probe Cache、Success Pool、High-Priority Buffer 和问题档案
+- 每条 Route 的跨轮攻击次数、gap 类型和最近验证的 memory version
 - 每个 case 独立的 Stop State
-- Attacker 和 Memory Builder 模型路径
+- Route Selector 和 Memory Builder 模型路径
 - 下一个训练轮次
 
 使用相同的 `--work-dir` 重新执行命令会从下一轮继续。使用新的
@@ -220,11 +249,12 @@ Answer Agent 和 Reranker 日志也保存在 `services/` 中。
 
 ## 核心文件
 
-- `training/run_alternating.py`：交替训练主流程。
-- `training/dataset_builder.py`：构建 Verl Parquet。
+- `attacker/selector.py`：候选 Route 观察、选择输出和 Verl record。
+- `attacker/probe.py`：冻结 Probe 生成、Oracle 验证与缓存对象构建。
+- `attacker/gap.py`：Storage / Retrieval / Reasoning Gap 归因。
+- `training/run_alternating.py`：分层选择与 Memory Builder 交替训练主流程。
+- `training/dataset_builder.py`：构建 Route Pool 和 Selector Verl Parquet。
 - `training/verl_runner.py`：启动 GRPO 并合并 checkpoint。
-- `attacker/verl_reward.py`：Attacker Reward 入口。
+- `attacker/verl_reward.py`：Route Selector Reward 入口。
 - `defender/verl_reward.py`：Memory Builder Reward 入口。
 - `memory/store.py`：执行记忆编辑和题库更新。
-
-# adv_mem

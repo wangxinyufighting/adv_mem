@@ -8,6 +8,8 @@ from training.alternating import (
 from training.dataset_builder import (
     AttackerDatasetBuilder,
     DatasetFiles,
+    RouteProposalBuilder,
+    RouteSelectorDatasetBuilder,
     memory_builder_records,
     write_verl_dataset,
 )
@@ -21,6 +23,8 @@ __all__ = [
     "MemoryTrainingFlow",
     "PendingMemoryEdit",
     "QuestionCandidate",
+    "RouteProposalBuilder",
+    "RouteSelectorDatasetBuilder",
     "StopCondition",
     "StopConfig",
     "StopState",

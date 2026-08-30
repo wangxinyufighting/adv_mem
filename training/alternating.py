@@ -2,9 +2,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from attacker.answer_agent import is_insufficient_answer
+from openai import APIError
+
+from attacker.gap import GapEvaluator
 from attacker.attacker import Attacker
-from attacker.models import GraphRouteBundle, OracleResult
+from attacker.models import RouteProbe
 from defender.memory_builder import MemoryBuilder
 from defender.models import (
     MemoryBuilderObservation,
@@ -23,29 +25,8 @@ from training.support_attribution import SupportAttributor
 from utils.json_output import StructuredOutputError
 
 
-@dataclass(frozen=True)
-class QuestionCandidate:
-    question_id: str
-    route: GraphRouteBundle
-    oracle: OracleResult
-    golden_answer: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "question_id": self.question_id,
-            "route": self.route.to_dict(),
-            "oracle": self.oracle.to_dict(),
-            "golden_answer": self.golden_answer,
-        }
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "QuestionCandidate":
-        return cls(
-            question_id=payload["question_id"],
-            route=GraphRouteBundle.from_dict(payload["route"]),
-            oracle=OracleResult.from_dict(payload["oracle"]),
-            golden_answer=payload["golden_answer"],
-        )
+# Compatibility name retained for the memory-builder and old run-state files.
+QuestionCandidate = RouteProbe
 
 
 @dataclass(frozen=True)
@@ -54,6 +35,7 @@ class PendingMemoryEdit:
     capability: CapabilityRecord
     observation: MemoryBuilderObservation
     before_correctness: float
+    gap_type: str
 
 
 @dataclass(frozen=True)
@@ -94,30 +76,26 @@ class MemoryTrainingFlow:
             answer_judge,
             defense_threshold,
         )
+        self.gap_evaluator = GapEvaluator(
+            retriever,
+            answer_agent,
+            answer_judge,
+            top_k=top_k,
+            correctness_threshold=defense_threshold,
+        )
 
     def process_question(
         self,
         candidate: QuestionCandidate,
     ) -> PendingMemoryEdit | None:
-        results = self.retriever.retrieve(
-            candidate.oracle.question,
-            self.store.state,
-            top_k=self.top_k,
+        evaluation = self.gap_evaluator.evaluate(candidate, self.store.state)
+        memories = evaluation.memories
+        correctness = evaluation.correctness
+        self.store.record_route_attack(
+            candidate.route.route_id,
+            evaluation.gap_type.value,
         )
-        memories = tuple(result.node for result in results)
-        correctness = 0.0
-        if memories:
-            memory_answer = self.answer_agent.answer_memories(
-                candidate.oracle.question,
-                memories,
-            )
-            if not is_insufficient_answer(memory_answer):
-                correctness = self.answer_judge.evaluate(
-                    candidate.oracle,
-                    candidate.golden_answer,
-                    memory_answer,
-                ).memory_correctness
-        capability = self._capability(candidate)
+        capability = self._capability(candidate, evaluation.gap_type.value)
         evidence = self._evidence(candidate)
 
         # Correct answers are defense successes; no memory reconstruction is needed.
@@ -147,6 +125,7 @@ class MemoryTrainingFlow:
             capability=capability,
             observation=observation,
             before_correctness=correctness,
+            gap_type=evaluation.gap_type.value,
         )
 
     def try_process_question(
@@ -156,7 +135,7 @@ class MemoryTrainingFlow:
         """Return availability separately so Judge failure is not a defense result."""
         try:
             return True, self.process_question(candidate)
-        except StructuredOutputError:
+        except (APIError, StructuredOutputError):
             return False, None
 
     def reward_context(
@@ -252,7 +231,10 @@ class MemoryTrainingFlow:
         return tuple(ProtectedQuestion.from_capability(record) for record in selected)
 
     @staticmethod
-    def _capability(candidate: QuestionCandidate) -> CapabilityRecord:
+    def _capability(
+        candidate: QuestionCandidate,
+        discovered_gap: str | None = None,
+    ) -> CapabilityRecord:
         oracle = candidate.oracle
         return CapabilityRecord(
             question_id=candidate.question_id,
@@ -263,6 +245,7 @@ class MemoryTrainingFlow:
             oracle_source_ids=tuple(
                 item.source_id for item in oracle.supporting_evidence
             ),
+            discovered_gap=discovered_gap,
         )
 
     @staticmethod

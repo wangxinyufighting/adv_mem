@@ -45,14 +45,15 @@ class RunState:
     attacker_model: str
     builder_model: str
     cases: dict[int, CaseRunState]
+    attacker_role: str = "route_selector_v1"
 
     @classmethod
     def new(cls, model: str, case_indices: list[int]) -> "RunState":
         return cls(
-            0,
-            model,
-            model,
-            {case_index: CaseRunState.new() for case_index in case_indices},
+            next_round=0,
+            attacker_model=model,
+            builder_model=model,
+            cases={case_index: CaseRunState.new() for case_index in case_indices},
         )
 
     @classmethod
@@ -66,14 +67,21 @@ class RunState:
         if not state_path.exists():
             return cls.new(model, case_indices)
         payload = json.loads(state_path.read_text(encoding="utf-8"))
+        role = payload.get("attacker_role")
         return cls(
             next_round=payload["next_round"],
-            attacker_model=payload["attacker_model"],
+            # Old checkpoints generated questions rather than selecting routes.
+            attacker_model=(
+                payload["attacker_model"]
+                if role == "route_selector_v1"
+                else model
+            ),
             builder_model=payload["builder_model"],
             cases={
                 int(case_index): CaseRunState.from_dict(case_state)
                 for case_index, case_state in payload["cases"].items()
             },
+            attacker_role="route_selector_v1",
         )
 
     def save(self, path: str | Path) -> None:
@@ -82,6 +90,7 @@ class RunState:
         payload = {
             "next_round": self.next_round,
             "attacker_model": self.attacker_model,
+            "attacker_role": self.attacker_role,
             "builder_model": self.builder_model,
             "cases": {
                 str(case_index): case_state.to_dict()

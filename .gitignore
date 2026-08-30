@@ -2,7 +2,8 @@ MemOS/
 .DS_Store
 logs/
 .memos/
-tests/
+tests/*
+!tests/*.py
 verl/
 .verl-cu124-src/
 .venv-cu124/
