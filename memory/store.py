@@ -105,13 +105,16 @@ class MemoryStore:
         inherit_target_provenance: bool = False,
     ) -> MemoryState:
         """Apply one builder action as one memory version."""
-        if action.operation == MemoryOperation.NOOP:
-            return self.state
-
+        if action.new_memory is None:
+            raise ValueError("ADD and MERGE require new memory content")
+        if action.operation == MemoryOperation.ADD and action.target_node_ids:
+            raise ValueError("ADD cannot target existing memories")
+        if action.operation == MemoryOperation.MERGE and not action.target_node_ids:
+            raise ValueError("MERGE requires at least one target")
         version = self.state.version + 1
         targets = tuple(self.state.nodes[node_id] for node_id in action.target_node_ids)
 
-        if action.operation in (MemoryOperation.MERGE, MemoryOperation.DELETE):
+        if action.operation == MemoryOperation.MERGE:
             for node in targets:
                 self.state.nodes[node.id] = replace(
                     node,
@@ -119,43 +122,37 @@ class MemoryStore:
                     updated_version=version,
                 )
 
-        result_node_ids: tuple[str, ...] = ()
-        if action.operation in (MemoryOperation.ADD, MemoryOperation.MERGE):
-            draft = action.new_memory
-            node = MemoryNode(
-                id=_node_id(version, action),
-                content=draft.content,
-                provenance_node_ids=_unique(
-                    provenance_node_ids,
-                    *(
-                        tuple(node.provenance_node_ids for node in targets)
-                        if inherit_target_provenance
-                        else ()
-                    ),
+        draft = action.new_memory
+        node = MemoryNode(
+            id=_node_id(version, action),
+            content=draft.content,
+            provenance_node_ids=_unique(
+                provenance_node_ids,
+                *(
+                    tuple(node.provenance_node_ids for node in targets)
+                    if inherit_target_provenance
+                    else ()
                 ),
-                source_ids=_unique(
-                    source_ids,
-                    *(
-                        tuple(node.source_ids for node in targets)
-                        if inherit_target_provenance
-                        else ()
-                    ),
+            ),
+            source_ids=_unique(
+                source_ids,
+                *(
+                    tuple(node.source_ids for node in targets)
+                    if inherit_target_provenance
+                    else ()
                 ),
-                linked_questions=_unique(
-                    *(node.linked_questions for node in targets),
-                    (question_id,) if question_id else (),
-                ),
-                tags=_unique(
-                    draft.tags,
-                    *(node.tags for node in targets),
-                ),
-                time_span=_time_span(time_span, targets),
-                token_count=estimate_token_count(draft.content),
-                created_version=version,
-                updated_version=version,
-            )
-            self.state.nodes[node.id] = node
-            result_node_ids = (node.id,)
+            ),
+            linked_questions=_unique(
+                *(node.linked_questions for node in targets),
+                (question_id,) if question_id else (),
+            ),
+            tags=_unique(draft.tags, *(node.tags for node in targets)),
+            time_span=_time_span(time_span, targets),
+            token_count=estimate_token_count(draft.content),
+            created_version=version,
+            updated_version=version,
+        )
+        self.state.nodes[node.id] = node
 
         self.state.version = version
         self.state.edit_history.append(
@@ -163,7 +160,7 @@ class MemoryStore:
                 version=version,
                 action=action.operation.value,
                 target_node_ids=action.target_node_ids,
-                result_node_ids=result_node_ids,
+                result_node_ids=(node.id,),
             )
         )
         return self.state
@@ -210,12 +207,8 @@ class MemoryStore:
         self.record_capability(stored)
         self.state.evidence_ledger[record.question_id] = evidence
         self.bind_question(node_ids, record.question_id)
-        if record.question_id not in self.state.success_pool:
-            self.state.success_pool.append(record.question_id)
-        if record.question_id in self.state.high_priority_buffer:
-            self.state.high_priority_buffer.remove(record.question_id)
 
-    def mark_high_priority(
+    def mark_failure(
         self,
         record: CapabilityRecord,
         evidence: tuple[MemoryEvidence, ...] = (),
@@ -223,10 +216,6 @@ class MemoryStore:
         self.record_capability(replace(record, passed=False))
         self.state.evidence_ledger[record.question_id] = evidence
         self.bind_question((), record.question_id)
-        if record.question_id in self.state.success_pool:
-            self.state.success_pool.remove(record.question_id)
-        if record.question_id not in self.state.high_priority_buffer:
-            self.state.high_priority_buffer.append(record.question_id)
 
     def link_question(self, node_ids: tuple[str, ...], question_id: str) -> None:
         for node_id in node_ids:

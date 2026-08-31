@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from attacker.gap import storage_values, support_coverage
+from attacker.gap import novelty_values, support_coverage
 from attacker.graph_router import GraphRouterPolicy, NoRouteFoundError
 from attacker.models import AttackMode, MemoryGraphView, RouteProbe, RouterConfig
 from attacker.selector import RouteSelector
@@ -122,7 +122,7 @@ class RouteSelectorDatasetBuilder:
             probe.route.route_id: value
             for probe, value in zip(
                 probes,
-                storage_values(probes, memory),
+                novelty_values(probes, memory),
                 strict=True,
             )
         }

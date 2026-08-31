@@ -87,14 +87,14 @@ class RouteSelector:
         observation: RouteSelectorObservation,
         probes: tuple[RouteProbe, ...],
         memory: MemoryState,
-        storage_values: tuple[float, ...] = (),
+        novelty_values: tuple[float, ...] = (),
     ) -> dict[str, Any]:
         signature = "|".join(probe.route.route_id for probe in probes)
         group_id = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:20]
         context = RouteSelectorRewardContext.from_state(
             probes,
             memory,
-            storage_values,
+            novelty_values,
         )
         return {
             "data_source": "route_selector",

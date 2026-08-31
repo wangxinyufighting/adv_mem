@@ -3,6 +3,8 @@ import types
 import unittest
 import json
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 # The production environment installs openai. Keep unit tests runnable in a small
@@ -13,7 +15,7 @@ if "openai" not in sys.modules:
     openai.APIError = type("APIError", (Exception,), {})
     sys.modules["openai"] = openai
 
-from attacker.gap import GapEvaluation, GapEvaluator, GapType, storage_values
+from attacker.gap import GapEvaluation, GapEvaluator, GapType, novelty_values
 from attacker.oracle import DeepSeekOracle
 from attacker.models import (
     AttackMode,
@@ -25,6 +27,7 @@ from attacker.models import (
     SupportingEvidence,
 )
 from attacker.reward import RouteSelectorReward
+from attacker.probe_bank import ProbeBank
 from attacker.reward_judge import DeepSeekRewardJudge
 from attacker.selector import RouteSelector
 from memory.models import MemoryNode, MemoryState
@@ -196,7 +199,7 @@ class RouteSelectorTests(unittest.TestCase):
         self.assertEqual(evaluator.calls, 1)
         self.assertEqual(reward.evaluate('{"choice": 1}', context)["score"], -1.0)
 
-    def test_storage_value_breaks_cold_start_reward_ties(self):
+    def test_novelty_breaks_cold_start_reward_ties(self):
         first = _probe()
         second = replace(
             first,
@@ -219,7 +222,7 @@ class RouteSelectorTests(unittest.TestCase):
         high = reward.evaluate('{"choice":1}', context)["score"]
         self.assertGreater(high, low)
 
-    def test_storage_value_rewards_more_novel_evidence(self):
+    def test_novelty_rewards_more_unseen_evidence(self):
         first = _probe()
         second = replace(
             first,
@@ -234,8 +237,27 @@ class RouteSelectorTests(unittest.TestCase):
                 ),
             ),
         )
-        low, high = storage_values((first, second), MemoryState.empty())
+        low, high = novelty_values((first, second), MemoryState.empty())
         self.assertGreater(high, low)
+
+    def test_repeat_penalty_discourages_the_same_route(self):
+        probe = _probe()
+        memory = MemoryState.empty()
+        MemoryStore(memory).record_route_attack("route-1", GapType.STORAGE.value)
+        context = RouteSelectorRewardContext.from_state((probe,), memory, (0.0,))
+
+        class Evaluator:
+            def evaluate(self, probe, memory):
+                return GapEvaluation(GapType.STORAGE, 0.0, (), None, 0.0, 0.0)
+
+        repeated = RouteSelectorReward(Evaluator()).evaluate(
+            '{"choice":0}', context
+        )["score"]
+        fresh = RouteSelectorReward(Evaluator()).evaluate(
+            '{"choice":0}',
+            RouteSelectorRewardContext.from_state((probe,), MemoryState.empty(), (0.0,)),
+        )["score"]
+        self.assertLess(repeated, fresh)
 
     def test_semantic_judge_only_requests_supplied_answer_labels(self):
         captured = {}
@@ -347,10 +369,19 @@ class RouteSelectorTests(unittest.TestCase):
         self.assertEqual(len(cold), 2)
         self.assertTrue(
             all(
-                len(record["extra_info"]["storage_values"]) == 2
+                len(record["extra_info"]["novelty_values"]) == 2
                 for record in cold
             )
         )
+
+    def test_probe_bank_round_trip(self):
+        bank = ProbeBank("test", {0: (_probe(), replace(_probe(), question_id="q2"))})
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "bank.json"
+            bank.save(path)
+            restored = ProbeBank.load(path)
+        self.assertEqual(restored.graph_version, "test")
+        self.assertEqual(len(restored.probes(0)), 2)
 
     def test_attack_history_is_backward_compatible_and_deduplicated(self):
         state = MemoryState.empty()

@@ -9,41 +9,87 @@ if "openai" not in sys.modules:
     openai.APIError = type("APIError", (Exception,), {})
     sys.modules["openai"] = openai
 
-from attacker.models import OracleResult, SupportingEvidence
-from defender import verl_reward
-from defender.memory_builder import ActionSchemaError, MemoryBuilder
+from attacker.models import (
+    AttackMode,
+    GraphRouteBundle,
+    OracleResult,
+    RouteNode,
+    RouteProbe,
+    SupportingEvidence,
+)
+from defender.controller import RepairController
+from defender.memory_builder import ContentSchemaError, MemoryBuilder
 from defender.models import MemoryBuilderObservation, MemoryBuilderRewardContext
 from defender.reward import MemoryBuilderReward
-from defender.reward_judge import DeepSeekMemoryJudge
-from memory.models import (
-    CapabilityRecord,
-    MemoryDraft,
-    MemoryEditAction,
-    MemoryNode,
-    MemoryOperation,
-    MemoryState,
-    MemoryStatus,
-)
-from memory.store import MemoryStore
-from training.alternating import MemoryTrainingFlow, PendingMemoryEdit
-from training.stop_condition import CompactionAuditor, StopCondition, StopConfig
-from training.support_attribution import SupportAttributor
-from utils.json_output import StructuredOutputError
+from memory.models import MemoryNode, MemoryOperation, MemoryState
+
+
+def _probe() -> RouteProbe:
+    route_node = RouteNode(
+        id="fact-1",
+        type="fact",
+        status="activated",
+        memory_type=None,
+        key=None,
+        memory="The user plans to visit Kyoto.",
+        background=None,
+        tags=(),
+        confidence=1.0,
+        version=1,
+        created_at=None,
+        updated_at=None,
+        source_ids=("src-1",),
+    )
+    route = GraphRouteBundle(
+        route_id="route-1",
+        graph_version="test",
+        case_index=0,
+        user_name="user",
+        attack_mode=AttackMode.SINGLE_FACT,
+        walk_node_ids=("fact-1",),
+        walk_steps=(),
+        evidence_nodes=(route_node,),
+        connector_nodes=(),
+        source_records=(),
+        route_signature="route-1",
+        sampling_seed=0,
+        sampling_attempt=1,
+    )
+    oracle = OracleResult(
+        route_id="route-1",
+        question="Where do I plan to visit?",
+        valid=True,
+        answer="Kyoto",
+        supporting_evidence=(
+            SupportingEvidence("src-1", "fact-1", "Kyoto", None, "user"),
+        ),
+        invalid_reason=None,
+        confidence=1.0,
+    )
+    return RouteProbe("question-1", route, oracle, "Kyoto")
+
+
+def _observation(memory: MemoryState) -> MemoryBuilderObservation:
+    probe = _probe()
+    plan = RepairController.plan(probe, memory)
+    return MemoryBuilderObservation(
+        memory.version,
+        probe.question_id,
+        probe.oracle.question,
+        probe.oracle.supporting_evidence,
+        tuple(memory.nodes[node_id] for node_id in plan.target_node_ids),
+        plan,
+    )
 
 
 class _Retriever:
     def retrieve(self, question, memory, top_k=5):
-        return [
-            types.SimpleNamespace(node=node)
-            for node in memory.active_nodes[:top_k]
-        ]
+        return [types.SimpleNamespace(node=node) for node in memory.active_nodes[:top_k]]
 
 
 class _AnswerAgent:
     def answer_memories(self, question, memories):
-        text = " ".join(node.content for node in memories)
-        expected = "Paris" if "live" in question else "Kyoto"
-        return expected if expected in text else "wrong"
+        return "Kyoto" if any("Kyoto" in node.content for node in memories) else "wrong"
 
 
 class _AnswerJudge:
@@ -53,370 +99,107 @@ class _AnswerJudge:
         )
 
 
-class _Policy:
-    def generate(self, prompt, max_tokens):
-        return '{"operation":"merge","targets":[0,1],"content":"short"}'
-
-
-class _EditJudge:
-    grounded = False
-    evidence_covered = True
-    targets_preserved = True
-
-    def evaluate(self, action, evidence, neighborhood):
-        return self
-
-
-class _ValidEditJudge(_EditJudge):
-    grounded = True
-
-
-class _Completions:
-    def create(self, **kwargs):
-        content = (
-            '{"grounded":true,"evidence_covered":true,'
-            '"targets_preserved":true}'
-        )
-        message = types.SimpleNamespace(content=content)
-        return types.SimpleNamespace(
-            choices=[types.SimpleNamespace(message=message)]
-        )
-
-
-def _oracle(question: str, answer: str, source: str) -> OracleResult:
-    return OracleResult(
-        route_id=f"route-{source}",
-        question=question,
-        valid=True,
-        answer=answer,
-        supporting_evidence=(
-            SupportingEvidence(source, f"fact-{source}", answer, "2025-01-01", "user"),
-        ),
-        invalid_reason=None,
-        confidence=1.0,
-    )
-
-
-def _observation(
-    oracle: OracleResult,
-    neighborhood=(),
-    gap="storage_gap",
-    support=(),
-) -> MemoryBuilderObservation:
-    return MemoryBuilderObservation(
-        memory_version=0,
-        question_id=f"question-{oracle.route_id}",
-        question=oracle.question,
-        gap_type=gap,
-        new_evidence=oracle.supporting_evidence,
-        memory_neighborhood=tuple(neighborhood),
-        support_node_ids=tuple(support),
-    )
-
-
 class MemoryBuilderTests(unittest.TestCase):
-    def test_action_parser_requires_one_clean_json_object(self):
+    def test_controller_adds_when_provenance_is_absent(self):
+        plan = RepairController.plan(_probe(), MemoryState.empty())
+        self.assertEqual(plan.operation, MemoryOperation.ADD)
+        self.assertEqual(plan.target_node_ids, ())
+
+    def test_controller_merges_all_provenance_matches(self):
+        first = MemoryNode(
+            "memory-1", "Kyoto", provenance_node_ids=("fact-1",)
+        )
+        second = MemoryNode("memory-2", "Kyoto", source_ids=("src-1",))
+        unrelated = MemoryNode("memory-3", "Osaka")
+        state = MemoryState(
+            nodes={node.id: node for node in (first, second, unrelated)}
+        )
+        plan = RepairController.plan(_probe(), state)
+        self.assertEqual(plan.operation, MemoryOperation.MERGE)
+        self.assertEqual(plan.target_node_ids, ("memory-1", "memory-2"))
+
+    def test_builder_accepts_only_one_content_field(self):
         builder = MemoryBuilder()
-        response = '{"operation":"add","targets":[],"content":"Kyoto"}'
-        self.assertEqual(
-            builder.parse_action(response, ()).operation,
-            MemoryOperation.ADD,
-        )
-        with self.assertRaises(ActionSchemaError):
-            builder.parse_action(f"prefix {response}", ())
+        self.assertEqual(builder.parse_content('{"content":"Kyoto"}'), "Kyoto")
+        for response in (
+            'prefix {"content":"Kyoto"}',
+            '{"content":""}',
+            '{"content":"Kyoto","operation":"add"}',
+        ):
+            with self.assertRaises(ContentSchemaError):
+                builder.parse_content(response)
 
-    def test_memory_judge_has_only_three_boolean_decisions(self):
-        client = types.SimpleNamespace(
-            chat=types.SimpleNamespace(completions=_Completions())
-        )
-        action = MemoryEditAction(
-            MemoryOperation.ADD,
-            new_memory=MemoryDraft("Kyoto"),
-        )
-        judged = DeepSeekMemoryJudge(client, "judge").evaluate(action, (), ())
-        self.assertTrue(judged.grounded)
-        self.assertTrue(judged.evidence_covered)
-        self.assertTrue(judged.targets_preserved)
-
-    def test_gap_type_constrains_repairs(self):
-        node = MemoryNode("support", "Kyoto", source_ids=("new",))
-        oracle = _oracle("Where will I visit?", "Kyoto", "new")
-        reward = MemoryBuilderReward(
-            MemoryBuilder(),
-            _AnswerAgent(),
-            _Retriever(),
-            _AnswerJudge(),
-            object(),
-        )
-        retrieval = _observation(
-            oracle,
-            (node,),
-            "retrieval_gap",
-            (node.id,),
-        )
-        context = MemoryBuilderRewardContext.from_state(
-            retrieval,
-            MemoryState(nodes={node.id: node}),
-            oracle,
-            0.0,
-        )
-        add = MemoryEditAction(
-            MemoryOperation.ADD,
-            new_memory=MemoryDraft("Kyoto"),
-        )
-        merge = MemoryEditAction(
-            MemoryOperation.MERGE,
-            (node.id,),
-            MemoryDraft("Kyoto"),
-        )
-        self.assertFalse(reward._valid_action(add, context))
-        self.assertTrue(reward._valid_action(merge, context))
-
-    def test_reward_reports_the_unavailable_stage(self):
-        class FailingAnswerAgent:
-            def answer_memories(self, question, memories):
-                raise StructuredOutputError("answer failed")
-
-        oracle = _oracle("Where will I visit?", "Kyoto", "new")
-        context = MemoryBuilderRewardContext.from_state(
-            _observation(oracle),
-            MemoryState.empty(),
-            oracle,
-            0.0,
-        )
-        reward = MemoryBuilderReward(
-            MemoryBuilder(),
-            FailingAnswerAgent(),
-            _Retriever(),
-            _AnswerJudge(),
-            _ValidEditJudge(),
-        ).evaluate(
-            '{"operation":"add","targets":[],"content":"Kyoto"}',
-            context,
-        )
-        self.assertEqual(reward["reward_available"], 0.0)
-        self.assertEqual(reward["edit_judge_available"], 1.0)
-        self.assertEqual(reward["answer_available"], 0.0)
-
-    def test_batch_reward_caches_duplicate_rollouts(self):
-        oracle = _oracle("Where will I visit?", "Kyoto", "new")
-        context = MemoryBuilderRewardContext.from_state(
-            _observation(oracle), MemoryState.empty(), oracle, 0.0
-        ).to_dict()
-
-        class Reward:
-            calls = 0
-
-            def evaluate(self, response, parsed_context):
-                self.calls += 1
-                return {"score": 1.0, "reward_available": 1.0}
-
-        previous = verl_reward._REWARD
-        reward = Reward()
-        try:
-            verl_reward._REWARD = reward
-            results = verl_reward.compute_score_batch(
-                ["memory_builder"] * 2,
-                ["same"] * 2,
-                [""] * 2,
-                [context] * 2,
-                ["group"] * 2,
-            )
-        finally:
-            verl_reward._REWARD = previous
-        self.assertEqual(len(results), 2)
-        self.assertEqual(reward.calls, 1)
-
-    def test_provenance_is_deterministic_and_only_inherited_when_trusted(self):
+    def test_builder_executes_the_controller_plan(self):
         target = MemoryNode(
-            "old",
-            "The user lived in Paris.",
-            source_ids=("old-source",),
-            provenance_node_ids=("old-fact",),
-            time_span=("2020-01-01", "2020-01-01"),
+            "memory-1",
+            "The user likes travel.",
+            provenance_node_ids=("fact-0",),
+            source_ids=("src-0",),
         )
         state = MemoryState(nodes={target.id: target})
-        oracle = _oracle("Where will I visit?", "Kyoto", "new-source")
-        observation = _observation(
-            oracle,
-            (target,),
-            "retrieval_gap",
-            (target.id,),
-        )
-        action = MemoryEditAction(
-            MemoryOperation.MERGE,
-            (target.id,),
-            MemoryDraft("The user lived in Paris and will visit Kyoto."),
-        )
-        builder = MemoryBuilder()
-        untrusted = builder.execute(state, observation, action)
-        trusted = builder.execute(
+        observation = _observation(state)
+        temp = MemoryBuilder().execute(
             state,
             observation,
-            action,
+            "The user plans to visit Kyoto.",
             trusted_provenance=True,
         )
-        left = untrusted.active_nodes[0]
-        right = trusted.active_nodes[0]
-        self.assertEqual(left.id, right.id)
-        self.assertEqual(left.source_ids, ())
-        self.assertEqual(set(right.source_ids), {"old-source", "new-source"})
-        self.assertEqual(right.time_span, ("2020-01-01", "2025-01-01"))
+        node = temp.active_nodes[-1]
+        self.assertEqual(observation.plan.operation, MemoryOperation.ADD)
+        self.assertEqual(node.provenance_node_ids, ("fact-1",))
+        self.assertEqual(state.version, 0)
 
-    def test_reward_context_keeps_only_local_capabilities(self):
-        oracle = _oracle("Where will I visit?", "Kyoto", "new")
-        observation = _observation(oracle)
-        unrelated = CapabilityRecord(
-            "old-question",
-            "Where did I live?",
-            "old-route",
-            "single_fact",
-            "Paris",
-            passed=True,
+    def test_observation_round_trip_keeps_plan(self):
+        target = MemoryNode(
+            "memory-1", "Kyoto", provenance_node_ids=("fact-1",)
         )
-        memory = MemoryState(
-            nodes={
-                "archived": MemoryNode(
-                    "archived",
-                    "obsolete",
-                    status=MemoryStatus.ARCHIVED,
-                )
-            },
-            capability_ledger={unrelated.question_id: unrelated},
-            success_pool=[unrelated.question_id],
+        observation = _observation(MemoryState(nodes={target.id: target}))
+        restored = MemoryBuilderObservation.from_dict(observation.to_dict())
+        self.assertEqual(restored, observation)
+        self.assertEqual(
+            restored.to_prompt_dict()["operation"], MemoryOperation.MERGE.value
         )
-        compact = MemoryBuilderRewardContext.from_state(
+
+    def test_reward_is_gain_minus_length_when_grounded(self):
+        observation = _observation(MemoryState.empty())
+        context = MemoryBuilderRewardContext.from_state(
             observation,
-            memory,
-            oracle,
+            MemoryState.empty(),
+            _probe().oracle,
             0.0,
-        ).memory
-        self.assertEqual(compact.capability_ledger, {})
-        self.assertEqual(compact.success_pool, [])
-        self.assertEqual(compact.nodes, {})
-
-    def test_commit_rolls_back_when_any_known_capability_regresses(self):
-        old_node = MemoryNode(
-            "old",
-            "The user lived in Paris.",
-            linked_questions=("old-question",),
-            token_count=5,
         )
-        old_record = CapabilityRecord(
-            question_id="old-question",
-            question="Where did I live?",
-            route_id="old-route",
-            attack_mode="single_fact",
-            oracle_answer="Paris",
-            supporting_memory_node_ids=(old_node.id,),
-            passed=True,
+        edit_judge = types.SimpleNamespace(
+            evaluate=lambda *args: types.SimpleNamespace(valid=True)
         )
-        state = MemoryState(
-            nodes={old_node.id: old_node},
-            capability_ledger={old_record.question_id: old_record},
-            success_pool=[old_record.question_id],
-        )
-        oracle = _oracle("Where will I visit?", "Kyoto", "new")
-        observation = _observation(oracle, (old_node,))
-        capability = CapabilityRecord(
-            question_id="new-question",
-            question=oracle.question,
-            route_id=oracle.route_id,
-            attack_mode="single_fact",
-            oracle_answer="Kyoto",
-        )
-        candidate = types.SimpleNamespace(
-            oracle=oracle,
-            golden_answer="Kyoto",
-            question_id=capability.question_id,
-        )
-        pending = PendingMemoryEdit(
-            candidate,
-            capability,
-            observation,
-            0.0,
-            "storage_gap",
-        )
-        flow = MemoryTrainingFlow(
-            MemoryStore(state),
-            _Retriever(),
-            _AnswerAgent(),
-            _AnswerJudge(),
-        )
-        destructive = MemoryEditAction(
-            MemoryOperation.MERGE,
-            (old_node.id,),
-            MemoryDraft("The user will visit Kyoto."),
-        )
-        committed = flow.commit(
-            pending,
-            destructive,
-            {"commit_valid": 1.0, "score": 1.0},
-        )
-        self.assertFalse(committed)
-        self.assertEqual(flow.store.state.nodes[old_node.id].status.value, "active")
-        self.assertIn(capability.question_id, flow.store.state.high_priority_buffer)
-        self.assertTrue(flow.store.state.capability_ledger[old_record.question_id].passed)
-
-    def test_support_attribution_rejects_an_incorrect_full_set(self):
-        oracle = _oracle("Where will I visit?", "Kyoto", "new")
-        node = MemoryNode("wrong", "The user will visit Osaka.")
-        selected = SupportAttributor(
-            _AnswerAgent(),
-            _AnswerJudge(),
-        ).select(oracle, (node,))
-        self.assertEqual(selected, ())
-
-    def test_compaction_rejects_a_structurally_invalid_edit(self):
-        left = MemoryNode("left", "The user lived in Paris.", token_count=5)
-        right = MemoryNode("right", "The user visits Kyoto.", token_count=5)
-        memory = MemoryState(nodes={left.id: left, right.id: right})
-        audit = CompactionAuditor(
+        reward = MemoryBuilderReward(
             MemoryBuilder(),
-            _Retriever(),
             _AnswerAgent(),
+            _Retriever(),
             _AnswerJudge(),
-            _EditJudge(),
-            StopConfig(max_neighborhoods=8),
-        ).audit(_Policy(), memory)
-        self.assertFalse(audit.compressed)
-        self.assertIs(audit.memory, memory)
+            edit_judge,
+        ).evaluate('{"content":"The user plans to visit Kyoto."}', context)
+        self.assertEqual(reward["gain"], 1.0)
+        self.assertEqual(reward["regression"], 0.0)
+        self.assertGreater(reward["score"], 0.9)
+        self.assertEqual(reward["commit_valid"], 1.0)
 
-    def test_compaction_checks_every_passed_capability(self):
-        left = MemoryNode(
-            "left",
-            "The user lived in Paris.",
-            linked_questions=("old-question",),
-            token_count=5,
+    def test_grounding_is_a_hard_gate(self):
+        observation = _observation(MemoryState.empty())
+        context = MemoryBuilderRewardContext.from_state(
+            observation, MemoryState.empty(), _probe().oracle, 0.0
         )
-        right = MemoryNode("right", "The user visits Kyoto.", token_count=5)
-        record = CapabilityRecord(
-            "old-question",
-            "Where did I live?",
-            "old-route",
-            "single_fact",
-            "Paris",
-            passed=True,
+        edit_judge = types.SimpleNamespace(
+            evaluate=lambda *args: types.SimpleNamespace(valid=False)
         )
-        memory = MemoryState(
-            nodes={left.id: left, right.id: right},
-            capability_ledger={record.question_id: record},
-        )
-        audit = CompactionAuditor(
+        reward = MemoryBuilderReward(
             MemoryBuilder(),
-            _Retriever(),
             _AnswerAgent(),
+            _Retriever(),
             _AnswerJudge(),
-            _ValidEditJudge(),
-            StopConfig(max_neighborhoods=8),
-        ).audit(_Policy(), memory)
-        self.assertFalse(audit.compressed)
-
-    def test_stop_condition_depends_only_on_unresolved_gaps(self):
-        stop = StopCondition(StopConfig(patience=2))
-        self.assertFalse(stop.update(True))
-        self.assertTrue(stop.update(True))
-        self.assertFalse(stop.update(False))
+            edit_judge,
+        ).evaluate('{"content":"Kyoto"}', context)
+        self.assertEqual(reward["score"], -1.0)
+        self.assertEqual(reward["commit_valid"], 0.0)
 
 
 if __name__ == "__main__":

@@ -3,8 +3,6 @@ from importlib import import_module
 
 _EXPORTS = {
     "training.alternating": (
-        "AlternatingRoundResult",
-        "AlternatingTrainer",
         "MemoryTrainingFlow",
         "PendingMemoryEdit",
         "QuestionCandidate",
@@ -17,7 +15,6 @@ _EXPORTS = {
         "memory_builder_records",
         "write_verl_dataset",
     ),
-    "training.stop_condition": ("StopCondition", "StopConfig", "StopState"),
 }
 _MODULES = {
     name: module

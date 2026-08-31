@@ -1,8 +1,9 @@
 from defender.memory_builder import MemoryBuilder
+from defender.controller import RepairController
 from defender.models import (
     MemoryBuilderObservation,
     MemoryBuilderRewardContext,
-    ProtectedQuestion,
+    RepairPlan,
 )
 from defender.reward import MemoryBuilderReward, MemoryBuilderRewardConfig
 from defender.reward_judge import DeepSeekMemoryJudge, MemoryJudgeResult
@@ -14,7 +15,8 @@ __all__ = [
     "MemoryBuilderReward",
     "MemoryBuilderRewardConfig",
     "MemoryBuilderRewardContext",
-    "ProtectedQuestion",
+    "RepairController",
+    "RepairPlan",
     "MemoryDraft",
     "MemoryEditAction",
     "MemoryOperation",

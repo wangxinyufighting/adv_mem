@@ -312,21 +312,21 @@ class RouteSelectorRewardContext:
     memory_nodes: tuple[MemoryNode, ...]
     attack_history: tuple[RouteAttackStats, ...]
     probes: tuple[RouteProbe, ...]
-    storage_values: tuple[float, ...] = ()
+    novelty_values: tuple[float, ...] = ()
 
     @classmethod
     def from_state(
         cls,
         probes: tuple[RouteProbe, ...],
         memory: MemoryState,
-        storage_values: tuple[float, ...] = (),
+        novelty_values: tuple[float, ...] = (),
     ) -> "RouteSelectorRewardContext":
         return cls(
             memory_version=memory.version,
             memory_nodes=tuple(memory.nodes.values()),
             attack_history=tuple(memory.attack_history.values()),
             probes=probes,
-            storage_values=storage_values,
+            novelty_values=novelty_values,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -335,7 +335,7 @@ class RouteSelectorRewardContext:
             "memory_nodes": [node.to_dict() for node in self.memory_nodes],
             "attack_history": [item.to_dict() for item in self.attack_history],
             "probes": [item.to_dict() for item in self.probes],
-            "storage_values": list(self.storage_values),
+            "novelty_values": list(self.novelty_values),
         }
 
     @classmethod
@@ -350,7 +350,7 @@ class RouteSelectorRewardContext:
                 for item in payload.get("attack_history", [])
             ),
             probes=tuple(RouteProbe.from_dict(item) for item in payload["probes"]),
-            storage_values=tuple(payload.get("storage_values", ())),
+            novelty_values=tuple(payload.get("novelty_values", ())),
         )
 
     def memory_state(self) -> MemoryState:

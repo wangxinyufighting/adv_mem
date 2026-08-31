@@ -17,6 +17,7 @@ from attacker.models import (
 )
 from attacker.oracle import DeepSeekOracle
 from attacker.probe import FixedProbeQuestionGenerator, ProbeFactory
+from attacker.probe_bank import ProbeBank
 from attacker.reward import (
     AttackerReward,
     AttackerRewardConfig,
@@ -43,6 +44,7 @@ __all__ = [
     "NoRouteFoundError",
     "OracleResult",
     "ProbeFactory",
+    "ProbeBank",
     "QwenAnswerAgent",
     "RewardJudgeResult",
     "RouteProbe",

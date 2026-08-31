@@ -38,12 +38,12 @@ def is_insufficient_answer(answer: str | None) -> bool:
 
 
 class QwenAnswerAgent:
-    """Frozen Qwen3-0.6B served through an OpenAI-compatible endpoint."""
+    """Frozen Qwen3-1.7B served through an OpenAI-compatible endpoint."""
 
     def __init__(
         self,
         client: Any,
-        model: str = "Qwen/Qwen3-0.6B",
+        model: str = "Qwen/Qwen3-1.7B",
         max_tokens: int = 512,
     ):
         self.client = client
@@ -60,7 +60,7 @@ class QwenAnswerAgent:
                     "http://localhost:8001/v1",
                 ),
             ),
-            model=os.getenv("ANSWER_AGENT_MODEL", "Qwen/Qwen3-0.6B"),
+            model=os.getenv("ANSWER_AGENT_MODEL", "Qwen/Qwen3-1.7B"),
             max_tokens=int(os.getenv("ANSWER_AGENT_MAX_TOKENS", "512")),
         )
 

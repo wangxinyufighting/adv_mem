@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-MODEL_PATH=${MODEL_PATH:-Qwen/Qwen3-0.6B}
+MODEL_PATH=${MODEL_PATH:-Qwen/Qwen3-1.7B}
 TRAIN_FILE=${TRAIN_FILE:-${ROOT}/data/memory_builder/train.parquet}
 VAL_FILE=${VAL_FILE:-${ROOT}/data/memory_builder/val.parquet}
 NGPUS=${NGPUS:-1}
@@ -55,7 +55,7 @@ cd "${VERL_HOME}"
     trainer.critic_warmup=0 \
     trainer.logger='["console", "swanlab"]' \
     trainer.project_name=adv_mem \
-    trainer.experiment_name=memory_builder_qwen3_0.6b_grpo \
+    trainer.experiment_name=memory_builder_qwen3_1.7b_grpo \
     trainer.default_local_dir="${CHECKPOINT_DIR}" \
     trainer.rollout_data_dir="${ROLLOUT_DATA_DIR}" \
     trainer.n_gpus_per_node="${NGPUS}" \

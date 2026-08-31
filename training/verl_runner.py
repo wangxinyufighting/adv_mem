@@ -48,6 +48,7 @@ class VerlRunner:
             "NGPUS": str(self.config.n_gpus),
             "TRAIN_BATCH_SIZE": str(batch_size),
             "PPO_MINI_BATCH_SIZE": str(batch_size),
+            "PPO_MICRO_BATCH_SIZE": str(min(4, batch_size)),
             "TOTAL_EPOCHS": str(self.config.epochs),
             "CHECKPOINT_DIR": str(checkpoints),
             "MAX_PROMPT_LENGTH": str(self.config.max_prompt_length),

@@ -126,11 +126,11 @@ def support_coverage(
     return max(node_score, source_score)
 
 
-def storage_values(
+def novelty_values(
     probes: tuple[RouteProbe, ...],
     memory: MemoryState,
 ) -> tuple[float, ...]:
-    """Estimate marginal new evidence per storage token."""
+    """Estimate marginal unseen evidence per storage token."""
     nodes = {
         node_id for item in memory.active_nodes for node_id in item.provenance_node_ids
     }
