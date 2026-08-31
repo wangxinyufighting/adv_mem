@@ -41,6 +41,7 @@ class CaseRound:
     store: MemoryStore
     flow: MemoryTrainingFlow
     selected: int
+    replayed: int
     pending: tuple[PendingMemoryEdit, ...]
     defended: int
     committed: int = 0
@@ -99,6 +100,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             )
 
         candidates = {}
+        replayed = {}
         with VLLMPolicyServer(
             runner.verl_dir,
             state.attacker_model,
@@ -107,27 +109,46 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             config.gpu_memory_utilization,
         ) as policy:
             for case, case_state in state.cases.items():
+                by_id = {
+                    probe.question_id: probe for probe in bank.probes(case)
+                }
+                priority_limit = (
+                    max(1, config.candidates_per_case // 2)
+                    if config.candidates_per_case
+                    else 0
+                )
+                priority = tuple(
+                    by_id[question_id]
+                    for question_id in case_state.memory.high_priority_buffer
+                    if question_id in by_id
+                )[:priority_limit]
+                priority_ids = {probe.question_id for probe in priority}
                 pool = [
                     probe
                     for probe in bank.probes(case)
-                    if not case_state.memory.capability_ledger.get(
-                        probe.question_id
+                    if probe.question_id not in priority_ids
+                    and (
+                        not case_state.memory.capability_ledger.get(
+                            probe.question_id
+                        )
+                        or not case_state.memory.capability_ledger[
+                            probe.question_id
+                        ].passed
                     )
-                    or not case_state.memory.capability_ledger[
-                        probe.question_id
-                    ].passed
                 ]
                 random.Random(
                     args.seed + round_index * 10_000 + case
                 ).shuffle(pool)
-                candidates[case] = selector.select_many(
+                fresh = selector.select_many(
                     policy,
                     tuple(pool),
                     case_state.memory,
                     retriever,
-                    config.candidates_per_case,
+                    config.candidates_per_case - len(priority),
                     config.selector_candidates,
                 )
+                candidates[case] = priority + fresh
+                replayed[case] = len(priority)
 
         case_rounds = {}
         builder_records = []
@@ -144,6 +165,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 store,
                 flow,
                 len(selected),
+                replayed[case],
                 pending,
                 sum(available and item is None for available, item in evaluated),
             )
@@ -180,7 +202,8 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             state.cases[case].memory = case_round.store.state
             print(
                 f"Round {round_index}, case {case}: "
-                f"selected={case_round.selected} defended={case_round.defended} "
+                f"selected={case_round.selected} replayed={case_round.replayed} "
+                f"defended={case_round.defended} "
                 f"committed={case_round.committed} "
                 f"discarded={case_round.discarded} "
                 f"memory_nodes={len(case_round.store.state.active_nodes)}"

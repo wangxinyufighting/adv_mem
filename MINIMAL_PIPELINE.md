@@ -163,9 +163,9 @@ regression 检查只覆盖被 target memory 关联的历史能力，以控制调
 2. Commit 验证：在带可信 provenance 的临时状态上，重新验证当前问题以及
    capability ledger 中全部历史成功问题。
 
-只有全部通过才把临时状态替换为正式 `MemoryState`。任何失败都保留旧状态，并把
-当前 capability 标为 `passed=false`；下一轮它仍在普通候选池中，不需要独立的
-high-priority 调度器。
+只有全部通过才把临时状态替换为正式 `MemoryState`。通过的能力进入
+`success_pool`，作为之后每次 commit 的全量回归基线。任何失败都保留旧状态，并把
+当前 capability 放入 `high_priority_buffer`，保证下一轮强制重放。
 
 rollout 创建的临时 node 不写 provenance，避免 reward 因读取隐藏标签而虚高；
 commit 时才继承 target provenance 并写入新 evidence provenance。
@@ -175,7 +175,8 @@ commit 时才继承 target provenance 并写入新 evidence provenance。
 `training/run_alternating.py` 每轮固定执行五步：
 
 1. 用整个固定 Bank 和当前 memory 构造 Route Selector 对比数据并训练。
-2. Selector 从 `passed=false` 或未见过的 Probe 中选 `candidates-per-case` 条。
+2. 先从 `high_priority_buffer` 强制重放，最多占候选预算一半；Selector 再从
+   `passed=false` 或未见过的 Probe 中补足剩余候选。
 3. 已能回答的直接记为成功；回答失败的生成确定性 `RepairPlan`。
 4. 用 pending repair 训练 Builder，再生成 content 并评分。
 5. 通过全量回归后提交，保存 `run_state.json`。
@@ -185,7 +186,6 @@ commit 时才继承 target provenance 并写入新 evidence provenance。
 - 每轮 Route Proposal 和 Probe/Oracle 生成；
 - 训练 pool 与 audit pool 两套采样；
 - Builder 的 operation/target 学习；
-- 专用 high-priority 采样分支；
 - saturation、patience、per-case stop state；
 - compaction policy/server/auditor。
 
@@ -204,8 +204,14 @@ Probe 不写入状态，因为 Bank 是只读真源。新状态标记为
 `minimal_memory_loop_v1`。旧 checkpoint 的 Builder schema 不兼容，代码会拒绝
 旧 `run_state.json` 并要求新 work directory，而不是进行不可靠的隐式迁移。
 
-`MemoryState` 保留 node、capability ledger、evidence ledger、edit history 和 route
-attack history；冗余的 success pool 与 high-priority buffer 已删除。
+`MemoryState` 保留 node、capability ledger、evidence ledger、edit history、route
+attack history，以及两项训练保障状态：
+
+- `success_pool`：所有已验证能力，正式 commit 必须对其做全量回归；
+- `high_priority_buffer`：失败或 Judge 暂不可用的能力，下一轮优先重放。
+
+高优先级队列最多占每轮候选预算的一半；重放仍失败的项目移动到队尾，避免一个
+长期失败项阻塞其他修复，同时保留 Attacker 探索新缺口的预算。
 
 ## 10. 主要文件
 

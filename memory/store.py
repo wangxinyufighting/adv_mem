@@ -207,8 +207,12 @@ class MemoryStore:
         self.record_capability(stored)
         self.state.evidence_ledger[record.question_id] = evidence
         self.bind_question(node_ids, record.question_id)
+        if record.question_id not in self.state.success_pool:
+            self.state.success_pool.append(record.question_id)
+        if record.question_id in self.state.high_priority_buffer:
+            self.state.high_priority_buffer.remove(record.question_id)
 
-    def mark_failure(
+    def mark_high_priority(
         self,
         record: CapabilityRecord,
         evidence: tuple[MemoryEvidence, ...] = (),
@@ -216,6 +220,11 @@ class MemoryStore:
         self.record_capability(replace(record, passed=False))
         self.state.evidence_ledger[record.question_id] = evidence
         self.bind_question((), record.question_id)
+        if record.question_id in self.state.success_pool:
+            self.state.success_pool.remove(record.question_id)
+        if record.question_id in self.state.high_priority_buffer:
+            self.state.high_priority_buffer.remove(record.question_id)
+        self.state.high_priority_buffer.append(record.question_id)
 
     def link_question(self, node_ids: tuple[str, ...], question_id: str) -> None:
         for node_id in node_ids:

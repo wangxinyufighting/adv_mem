@@ -21,7 +21,8 @@ from defender.controller import RepairController
 from defender.memory_builder import ContentSchemaError, MemoryBuilder
 from defender.models import MemoryBuilderObservation, MemoryBuilderRewardContext
 from defender.reward import MemoryBuilderReward
-from memory.models import MemoryNode, MemoryOperation, MemoryState
+from memory.models import CapabilityRecord, MemoryNode, MemoryOperation, MemoryState
+from memory.store import MemoryStore
 
 
 def _probe() -> RouteProbe:
@@ -100,6 +101,32 @@ class _AnswerJudge:
 
 
 class MemoryBuilderTests(unittest.TestCase):
+    def test_success_and_high_priority_pools_are_state_guards(self):
+        node = MemoryNode("memory-1", "Kyoto")
+        store = MemoryStore(MemoryState(nodes={node.id: node}))
+
+        def capability(question_id):
+            return CapabilityRecord(
+                question_id,
+                "Where?",
+                f"route-{question_id}",
+                "single_fact",
+                "Kyoto",
+            )
+
+        store.mark_high_priority(capability("q1"))
+        store.mark_high_priority(capability("q2"))
+        store.mark_high_priority(capability("q1"))
+        self.assertEqual(store.state.high_priority_buffer, ["q2", "q1"])
+
+        store.mark_success(capability("q2"), (node.id,))
+        self.assertEqual(store.state.success_pool, ["q2"])
+        self.assertEqual(store.state.high_priority_buffer, ["q1"])
+
+        restored = MemoryState.from_dict(store.state.to_dict())
+        self.assertEqual(restored.success_pool, ["q2"])
+        self.assertEqual(restored.high_priority_buffer, ["q1"])
+
     def test_controller_adds_when_provenance_is_absent(self):
         plan = RepairController.plan(_probe(), MemoryState.empty())
         self.assertEqual(plan.operation, MemoryOperation.ADD)

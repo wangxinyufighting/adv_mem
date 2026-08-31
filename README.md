@@ -103,7 +103,8 @@ work_dir/
 ```
 
 每个 case 的 `MemoryState`、两个 policy checkpoint 和下一轮编号都保存在
-`run_state.json`。Probe Bank 是独立的只读输入，不再复制进每轮状态。
+`run_state.json`。`success_pool` 保存全量回归基线，`high_priority_buffer` 保证失败
+能力在后续轮次强制重放。Probe Bank 是独立的只读输入，不再复制进每轮状态。
 
 ## 测试
 

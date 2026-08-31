@@ -119,7 +119,7 @@ class MemoryTrainingFlow:
             not reward.get("commit_valid", 0.0)
             or reward["score"] <= self.commit_threshold
         ):
-            self.store.mark_failure(pending.capability, evidence)
+            self.store.mark_high_priority(pending.capability, evidence)
             return False
 
         temp = self.builder.execute(
@@ -129,21 +129,21 @@ class MemoryTrainingFlow:
             trusted_provenance=True,
         )
         old = tuple(
-            record
-            for record in self.store.state.capability_ledger.values()
-            if record.passed
+            self.store.state.capability_ledger[question_id]
+            for question_id in self.store.state.success_pool
+            if question_id in self.store.state.capability_ledger
         )
         support = {}
         for record in old:
             node_ids = self._verified_support(self._oracle(record), temp)
             if not node_ids:
-                self.store.mark_failure(pending.capability, evidence)
+                self.store.mark_high_priority(pending.capability, evidence)
                 return False
             support[record.question_id] = node_ids
 
         current = self._verified_support(pending.candidate.oracle, temp)
         if not current:
-            self.store.mark_failure(pending.capability, evidence)
+            self.store.mark_high_priority(pending.capability, evidence)
             return False
 
         committed = MemoryStore(temp)
@@ -158,12 +158,12 @@ class MemoryTrainingFlow:
         return True
 
     def discard(self, pending: PendingMemoryEdit) -> None:
-        self.store.mark_failure(
+        self.store.mark_high_priority(
             pending.capability, self._evidence(pending.candidate)
         )
 
     def defer_question(self, candidate: RouteProbe) -> None:
-        self.store.mark_failure(
+        self.store.mark_high_priority(
             self._capability(candidate), self._evidence(candidate)
         )
 

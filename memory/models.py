@@ -138,6 +138,8 @@ class MemoryState:
     capability_ledger: dict[str, CapabilityRecord] = field(default_factory=dict)
     edit_history: list[MemoryEditRecord] = field(default_factory=list)
     evidence_ledger: dict[str, tuple[MemoryEvidence, ...]] = field(default_factory=dict)
+    success_pool: list[str] = field(default_factory=list)
+    high_priority_buffer: list[str] = field(default_factory=list)
     attack_history: dict[str, RouteAttackStats] = field(default_factory=dict)
 
     @classmethod
@@ -174,6 +176,8 @@ class MemoryState:
                 }
                 for question_id, evidence in self.evidence_ledger.items()
             ],
+            "success_pool": list(self.success_pool),
+            "high_priority_buffer": list(self.high_priority_buffer),
             "attack_history": [
                 item.to_dict() for item in self.attack_history.values()
             ],
@@ -211,6 +215,8 @@ class MemoryState:
                 )
                 for record in evidence_records
             },
+            success_pool=list(payload.get("success_pool", ())),
+            high_priority_buffer=list(payload.get("high_priority_buffer", ())),
             attack_history={
                 item.route_id: item
                 for item in (
