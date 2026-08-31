@@ -8,7 +8,10 @@ AdvMem 用两个交替更新的 GRPO policy 构建长期记忆：
 Graph Router、问题生成、Oracle 验证只在离线阶段运行一次。训练过程中不再生成
 Route 或改写问题；ADD/MERGE 与 target memory 由 provenance 规则确定。
 
-完整设计、数据结构和逐文件说明见 [MINIMAL_PIPELINE.md](MINIMAL_PIPELINE.md)。
+文档：
+
+- [详细代码与算法逻辑](docs/ALGORITHM_AND_CODE_GUIDE.md)
+- [极简架构摘要](MINIMAL_PIPELINE.md)
 
 ## 核心流程
 
