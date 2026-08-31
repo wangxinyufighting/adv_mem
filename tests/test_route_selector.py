@@ -32,7 +32,7 @@ from attacker.models import (
     SupportingEvidence,
 )
 from attacker.graph_router import GraphRouterPolicy
-from attacker.probe import ProbeFactory
+from attacker.probe import FixedProbeQuestionGenerator, ProbeFactory
 from attacker.reward import RouteSelectorReward
 from attacker.probe_cache import ProbeCache
 from attacker.reward_judge import DeepSeekRewardJudge
@@ -121,6 +121,34 @@ def _memory_node(provenance=True) -> MemoryNode:
 
 
 class RouteSelectorTests(unittest.TestCase):
+    def test_probe_generator_requests_non_thinking_json(self):
+        class Completions:
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                message = types.SimpleNamespace(
+                    content='{\n  "question": "Where do I\\nplan to visit?"\n}'
+                )
+                return types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(message=message)]
+                )
+
+        completions = Completions()
+        client = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=completions)
+        )
+        question = FixedProbeQuestionGenerator(client, "deepseek-chat").generate(
+            _probe().route
+        )
+
+        self.assertEqual(question, "Where do I plan to visit?")
+        self.assertEqual(
+            completions.kwargs["extra_body"], {"thinking": {"type": "disabled"}}
+        )
+        self.assertEqual(
+            completions.kwargs["response_format"], {"type": "json_object"}
+        )
+        self.assertNotIn("/no_think", completions.kwargs["messages"][1]["content"])
+
     def test_coverage_route_anchors_the_least_visited_fact(self):
         graph = MemoryGraphView(
             0,
