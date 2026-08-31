@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 from dataclasses import replace
 from typing import Any
@@ -6,15 +7,27 @@ from typing import Any
 from openai import APIError, OpenAI
 
 from attacker.answer_agent import is_insufficient_answer
-from attacker.attacker import Attacker
-from attacker.models import AttackerObservation, GraphRouteBundle, RouteProbe
+from attacker.models import AttackMode, GraphRouteBundle, RouteProbe
 from attacker.validation import (
     answer_is_leaked,
     ensure_question_mark,
     question_constraint_error,
     route_fidelity,
 )
-from utils.json_output import StructuredOutputError
+from utils.json_output import StructuredOutputError, clean_model_output
+
+
+SYSTEM_PROMPT = """Write one natural, standalone question whose answer is determined
+by target. Use I/my for the user's life and you for an earlier assistant response.
+Do not reveal the answer, invent facts, mention the input, or join unrelated details.
+Return exactly one question on one line, ending with a question mark."""
+
+MODE_PROMPTS = {
+    AttackMode.SINGLE_FACT: "Ask for one specific target detail.",
+    AttackMode.SAME_TOPIC: "Ask one question that requires at least two target facts.",
+    AttackMode.TEMPORAL_EVOLUTION: "Ask about the earlier and later target states.",
+    AttackMode.COMPARISON: "Compare both targets on the supplied dimension.",
+}
 
 
 class FixedProbeQuestionGenerator:
@@ -29,7 +42,6 @@ class FixedProbeQuestionGenerator:
         self.client = client
         self.model = model
         self.max_tokens = max_tokens
-        self.prompt_builder = Attacker()
 
     @classmethod
     def from_env(cls) -> "FixedProbeQuestionGenerator":
@@ -46,16 +58,28 @@ class FixedProbeQuestionGenerator:
         )
 
     def generate(self, route: GraphRouteBundle) -> str:
-        observation = AttackerObservation(route, ())
         response = self.client.chat.completions.create(
             model=self.model,
-            messages=self.prompt_builder.build_prompt(observation),
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"{SYSTEM_PROMPT}\n\n{MODE_PROMPTS[route.attack_mode]}",
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        route.to_attacker_context(), ensure_ascii=False
+                    )
+                    + "\n\n/no_think",
+                },
+            ],
             temperature=0.7,
             max_tokens=self.max_tokens,
         )
-        return self.prompt_builder.parse_question(
-            response.choices[0].message.content or ""
-        )
+        question = clean_model_output(response.choices[0].message.content or "")
+        if not question or "\n" in question:
+            raise ValueError("Invalid question output")
+        return question
 
 
 class ProbeFactory:

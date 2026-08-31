@@ -8,7 +8,6 @@ _EXPORTS = {
         "QuestionCandidate",
     ),
     "training.dataset_builder": (
-        "AttackerDatasetBuilder",
         "DatasetFiles",
         "RouteProposalBuilder",
         "RouteSelectorDatasetBuilder",

@@ -10,7 +10,10 @@ from openai import APIError
 
 from attacker.answer_agent import QwenAnswerAgent
 from attacker.gap import GapEvaluation, GapEvaluator, GapType
-from attacker.models import RouteSelectorRewardContext
+from attacker.models import GraphRouteBundle, RouteProbe, RouteSelectorRewardContext
+from attacker.oracle import DeepSeekOracle
+from attacker.probe import FixedProbeQuestionGenerator, ProbeFactory
+from attacker.probe_cache import ProbeCache
 from attacker.reward_judge import DeepSeekRewardJudge
 from attacker.selector import RouteSelector
 from utils.json_output import StructuredOutputError
@@ -33,12 +36,18 @@ class RouteSelectorReward:
         evaluator: GapEvaluator,
         config: RouteSelectorRewardConfig | None = None,
         trace_path: str | Path | None = None,
+        probe_factory: ProbeFactory | None = None,
+        probe_cache_path: str | Path | None = None,
     ):
         self.evaluator = evaluator
         self.config = config or RouteSelectorRewardConfig()
         self.trace_path = Path(trace_path) if trace_path else None
+        self.probe_factory = probe_factory
+        self.probe_cache_path = probe_cache_path
         self._trace_lock = Lock()
         self._gap_cache: dict[tuple[str, int], GapEvaluation] = {}
+        self._probe_cache: dict[str, RouteProbe | None] = {}
+        self._persistent_caches: dict[str, ProbeCache] = {}
         self._gap_lock = Lock()
         if self.trace_path:
             self.trace_path.parent.mkdir(parents=True, exist_ok=True)
@@ -46,14 +55,28 @@ class RouteSelectorReward:
     @classmethod
     def from_env(cls) -> "RouteSelectorReward":
         config = RouteSelectorRewardConfig()
+        answer_agent = QwenAnswerAgent.from_env()
+        judge = DeepSeekRewardJudge.from_env()
         evaluator = GapEvaluator(
             HybridMemoryRetriever.from_env(),
-            QwenAnswerAgent.from_env(),
-            DeepSeekRewardJudge.from_env(),
+            answer_agent,
+            judge,
             top_k=config.memory_top_k,
             correctness_threshold=config.correctness_threshold,
         )
-        return cls(evaluator, config, os.getenv("ATTACKER_REWARD_TRACE"))
+        factory = ProbeFactory(
+            FixedProbeQuestionGenerator.from_env(),
+            DeepSeekOracle(),
+            answer_agent,
+            judge,
+        )
+        return cls(
+            evaluator,
+            config,
+            os.getenv("ATTACKER_REWARD_TRACE"),
+            factory,
+            os.getenv("ATTACKER_PROBE_CACHE"),
+        )
 
     def evaluate(
         self,
@@ -62,20 +85,28 @@ class RouteSelectorReward:
     ) -> dict[str, float]:
         trace: dict[str, Any] = {"response": response}
         try:
-            choice = RouteSelector.parse_choice(response, len(context.probes))
+            choice = RouteSelector.parse_choice(response, len(context.routes))
         except (KeyError, TypeError, ValueError) as error:
             return self._finish(
                 self._result(-1.0), trace, stage="invalid_choice", error=str(error)
             )
 
-        probe = context.probes[choice]
+        route = context.routes[choice]
+        probe = self._probe(route, context)
+        if probe is None:
+            return self._finish(
+                self._result(0.0, reward_available=0.0, choice_valid=1.0),
+                trace,
+                stage="probe_unavailable",
+                route_id=route.route_id,
+            )
         memory = context.memory_state()
         trace.update(
             choice=choice,
-            route_id=probe.route.route_id,
+            route_id=route.route_id,
             question=probe.oracle.question,
         )
-        cache_key = (probe.route.route_id, context.memory_version)
+        cache_key = (route.route_id, context.memory_version)
         with self._gap_lock:
             evaluation = self._gap_cache.get(cache_key)
         if evaluation is None:
@@ -91,11 +122,11 @@ class RouteSelectorReward:
             with self._gap_lock:
                 self._gap_cache[cache_key] = evaluation
 
-        history = memory.attack_history.get(probe.route.route_id)
+        history = memory.attack_history.get(route.route_id)
         attempts = history.attempts if history else 0
         novelty = (
             context.novelty_values[choice]
-            if len(context.novelty_values) == len(context.probes)
+            if len(context.novelty_values) == len(context.routes)
             else 1.0 - evaluation.structural_coverage
         )
         repeat = 1.0 - 1.0 / math.sqrt(1.0 + attempts)
@@ -123,6 +154,35 @@ class RouteSelectorReward:
             stage=evaluation.gap_type.value,
             memory_answer=evaluation.memory_answer,
         )
+
+    def _probe(
+        self,
+        route: GraphRouteBundle,
+        context: RouteSelectorRewardContext,
+    ) -> RouteProbe | None:
+        if route.route_id in self._probe_cache:
+            return self._probe_cache[route.route_id]
+        cached = next(
+            (
+                probe
+                for probe in context.cached_probes
+                if probe.route.route_id == route.route_id
+            ),
+            None,
+        )
+        persistent = None
+        if self.probe_cache_path:
+            persistent = self._persistent_caches.get(route.graph_version)
+            if persistent is None:
+                persistent = ProbeCache(route.graph_version, self.probe_cache_path)
+                self._persistent_caches[route.graph_version] = persistent
+        probe = cached or (persistent.get(route) if persistent else None)
+        if probe is None and self.probe_factory:
+            probe = self.probe_factory.build(route)
+            if probe is not None and persistent:
+                persistent.put(probe)
+        self._probe_cache[route.route_id] = probe
+        return probe
 
     def evaluate_batch(
         self,

@@ -1,10 +1,8 @@
 from attacker.answer_agent import QwenAnswerAgent
-from attacker.attacker import Attacker
 from attacker.gap import GapEvaluation, GapEvaluator, GapType
 from attacker.graph_router import GraphRouterPolicy, NoRouteFoundError
 from attacker.models import (
     AttackMode,
-    AttackerObservation,
     GraphRouteBundle,
     MemoryGraphView,
     OracleResult,
@@ -17,7 +15,7 @@ from attacker.models import (
 )
 from attacker.oracle import DeepSeekOracle
 from attacker.probe import FixedProbeQuestionGenerator, ProbeFactory
-from attacker.probe_bank import ProbeBank
+from attacker.probe_cache import ProbeCache
 from attacker.reward import (
     AttackerReward,
     AttackerRewardConfig,
@@ -29,8 +27,6 @@ from attacker.selector import RouteSelector
 
 __all__ = [
     "AttackMode",
-    "Attacker",
-    "AttackerObservation",
     "AttackerReward",
     "AttackerRewardConfig",
     "DeepSeekRewardJudge",
@@ -44,7 +40,7 @@ __all__ = [
     "NoRouteFoundError",
     "OracleResult",
     "ProbeFactory",
-    "ProbeBank",
+    "ProbeCache",
     "QwenAnswerAgent",
     "RewardJudgeResult",
     "RouteProbe",

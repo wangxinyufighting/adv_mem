@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from attacker.answer_agent import QwenAnswerAgent
-from attacker.probe_bank import ProbeBank
+from attacker.models import GraphRouteBundle
+from attacker.oracle import DeepSeekOracle
+from attacker.probe import FixedProbeQuestionGenerator, ProbeFactory
+from attacker.probe_cache import ProbeCache
 from attacker.reward_judge import DeepSeekRewardJudge
 from attacker.selector import RouteSelector
 from defender.memory_builder import MemoryBuilder
@@ -13,6 +16,7 @@ from defender.reward import MemoryBuilderReward
 from memory.store import MemoryStore
 from training.alternating import MemoryTrainingFlow, PendingMemoryEdit
 from training.dataset_builder import (
+    RouteProposalBuilder,
     RouteSelectorDatasetBuilder,
     memory_builder_records,
     write_verl_dataset,
@@ -20,6 +24,7 @@ from training.dataset_builder import (
 from training.policy_server import VLLMPolicyServer
 from training.run_state import RunState
 from training.verl_runner import VerlConfig, VerlRunner
+from utils.longmemeval_graph_reader import LongMemEvalGraphReader
 from utils.memory_retrieval import HybridMemoryRetriever
 
 
@@ -42,8 +47,10 @@ class CaseRound:
     flow: MemoryTrainingFlow
     selected: int
     replayed: int
+    explored: int
     pending: tuple[PendingMemoryEdit, ...]
     defended: int
+    deferred: int
     committed: int = 0
     discarded: int = 0
 
@@ -51,14 +58,33 @@ class CaseRound:
 def run(config: RunConfig, args: argparse.Namespace) -> None:
     from transformers import AutoTokenizer
 
-    bank = ProbeBank.load(args.probe_bank)
+    if args.routes_per_case < 2 or config.selector_candidates < 2:
+        raise ValueError("Route and selector candidate counts must be at least two")
+    if config.candidates_per_case < 1:
+        raise ValueError("candidates-per-case must be positive")
+    reader = LongMemEvalGraphReader(args.graph, args.longmemeval, args.graph_version)
+    case_indices = reader.available_cases()
+    if not case_indices:
+        raise ValueError("Graph contains no cases for the requested graph version")
     state_path = config.work_dir / "run_state.json"
-    state = RunState.load(state_path, args.model, bank.case_indices)
+    state = RunState.load(
+        state_path,
+        args.model,
+        case_indices,
+        args.graph_version,
+    )
+    probe_cache = ProbeCache(args.graph_version, config.work_dir / "probe_cache.json")
     retriever = HybridMemoryRetriever.from_env()
     selector = RouteSelector()
     builder = MemoryBuilder()
     answer_agent = QwenAnswerAgent.from_env()
     answer_judge = DeepSeekRewardJudge.from_env()
+    probe_factory = ProbeFactory(
+        FixedProbeQuestionGenerator.from_env(),
+        DeepSeekOracle(),
+        answer_agent,
+        answer_judge,
+    )
     reward_model = MemoryBuilderReward.from_env()
     runner = VerlRunner(
         ROOT,
@@ -73,6 +99,13 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
 
     for round_index in range(state.next_round, state.next_round + config.rounds):
         round_dir = config.work_dir / f"round_{round_index:03d}"
+        proposals = {}
+        for case, case_state in state.cases.items():
+            proposals[case] = RouteProposalBuilder(
+                reader,
+                args.seed + round_index * 10_000 + case,
+            ).routes(case, args.routes_per_case, case_state.router_state())
+
         data_builder = RouteSelectorDatasetBuilder(
             retriever,
             selector,
@@ -83,7 +116,11 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         attacker_records = [
             record
             for case, case_state in state.cases.items()
-            for record in data_builder.records(bank.probes(case), case_state.memory)
+            for record in data_builder.records(
+                proposals[case],
+                case_state.memory,
+                probe_cache,
+            )
         ]
         if attacker_records:
             data = write_verl_dataset(
@@ -96,11 +133,17 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 f"{data.train_size} prompts"
             )
             state.attacker_model = runner.train(
-                "attacker", state.attacker_model, data, round_dir / "attacker"
+                "attacker",
+                state.attacker_model,
+                data,
+                round_dir / "attacker",
+                probe_cache.path,
             )
+            probe_cache.refresh()
 
         candidates = {}
         replayed = {}
+        explored = {}
         with VLLMPolicyServer(
             runner.verl_dir,
             state.attacker_model,
@@ -109,9 +152,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             config.gpu_memory_utilization,
         ) as policy:
             for case, case_state in state.cases.items():
-                by_id = {
-                    probe.question_id: probe for probe in bank.probes(case)
-                }
+                by_id = probe_cache.by_question()
                 priority_limit = (
                     max(1, config.candidates_per_case // 2)
                     if config.candidates_per_case
@@ -121,21 +162,23 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                     by_id[question_id]
                     for question_id in case_state.memory.high_priority_buffer
                     if question_id in by_id
+                    and by_id[question_id].route.case_index == case
                 )[:priority_limit]
-                priority_ids = {probe.question_id for probe in priority}
+                priority_routes = {probe.route.route_id for probe in priority}
+                passed_routes = {
+                    record.route_id
+                    for record in case_state.memory.capability_ledger.values()
+                    if record.passed
+                }
                 pool = [
-                    probe
-                    for probe in bank.probes(case)
-                    if probe.question_id not in priority_ids
-                    and (
-                        not case_state.memory.capability_ledger.get(
-                            probe.question_id
-                        )
-                        or not case_state.memory.capability_ledger[
-                            probe.question_id
-                        ].passed
-                    )
+                    route
+                    for route in proposals[case]
+                    if route.route_id not in priority_routes | passed_routes
                 ]
+                budget = config.candidates_per_case - len(priority)
+                coverage = tuple(pool[:1]) if budget else ()
+                coverage_ids = {route.route_id for route in coverage}
+                pool = [route for route in pool if route.route_id not in coverage_ids]
                 random.Random(
                     args.seed + round_index * 10_000 + case
                 ).shuffle(pool)
@@ -144,11 +187,24 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                     tuple(pool),
                     case_state.memory,
                     retriever,
-                    config.candidates_per_case - len(priority),
+                    budget - len(coverage),
                     config.selector_candidates,
                 )
-                candidates[case] = priority + fresh
+                selected_routes = coverage + fresh
+                for route in selected_routes:
+                    _record_visit(case_state.node_visit_counts, route)
+                materialized = []
+                for route in selected_routes:
+                    probe = probe_cache.get(route)
+                    if probe is None:
+                        probe = probe_factory.build(route)
+                        if probe:
+                            probe_cache.put(probe)
+                    if probe:
+                        materialized.append(probe)
+                candidates[case] = priority + tuple(materialized)
                 replayed[case] = len(priority)
+                explored[case] = len(coverage)
 
         case_rounds = {}
         builder_records = []
@@ -158,16 +214,25 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 store, retriever, answer_agent, answer_judge, builder
             )
             evaluated = tuple(flow.try_process_question(probe) for probe in selected)
+            deferred = 0
+            for probe, (available, _) in zip(selected, evaluated, strict=True):
+                if not available:
+                    flow.defer_question(probe)
+                    deferred += 1
             pending = tuple(
                 item for available, item in evaluated if available and item is not None
             )
             case_rounds[case] = CaseRound(
-                store,
-                flow,
-                len(selected),
-                replayed[case],
-                pending,
-                sum(available and item is None for available, item in evaluated),
+                store=store,
+                flow=flow,
+                selected=len(selected),
+                replayed=replayed[case],
+                explored=explored[case],
+                pending=pending,
+                defended=sum(
+                    available and item is None for available, item in evaluated
+                ),
+                deferred=deferred,
             )
             builder_records.extend(memory_builder_records(pending, store.state, builder))
 
@@ -203,6 +268,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             print(
                 f"Round {round_index}, case {case}: "
                 f"selected={case_round.selected} replayed={case_round.replayed} "
+                f"explored={case_round.explored} deferred={case_round.deferred} "
                 f"defended={case_round.defended} "
                 f"committed={case_round.committed} "
                 f"discarded={case_round.discarded} "
@@ -210,6 +276,11 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             )
         state.next_round = round_index + 1
         state.save(state_path)
+
+
+def _record_visit(counts: dict[str, int], route: GraphRouteBundle) -> None:
+    for node in route.evidence_nodes:
+        counts[node.id] = counts.get(node.id, 0) + 1
 
 
 def _repair_cases(
@@ -233,6 +304,7 @@ def _repair_cases(
                 available, pending = case_round.flow.try_process_question(old.candidate)
                 if not available:
                     case_round.flow.defer_question(old.candidate)
+                    case_round.deferred += 1
                     continue
                 if pending is None:
                     case_round.defended += 1
@@ -245,6 +317,7 @@ def _repair_cases(
                 )
                 if not reward["reward_available"]:
                     case_round.flow.defer_question(pending.candidate)
+                    case_round.deferred += 1
                     continue
                 if (
                     not reward["commit_valid"]
@@ -261,12 +334,18 @@ def _repair_cases(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Minimal alternating GRPO training")
+    parser = argparse.ArgumentParser(description="Dynamic graph-route GRPO training")
     parser.add_argument(
-        "--probe-bank",
+        "--graph",
         type=Path,
-        default=ROOT / "data/longmemeval/probe_bank_fullgraph5.json",
+        default=ROOT / "data/longmemeval/memory_graph_fullgraph5.json",
     )
+    parser.add_argument(
+        "--longmemeval",
+        type=Path,
+        default=ROOT / "data/longmemeval/longmemeval_s.json",
+    )
+    parser.add_argument("--graph-version", default="fullgraph5")
     parser.add_argument(
         "--model",
         default=os.getenv(
@@ -277,6 +356,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--selector-candidates", type=int, default=2)
     parser.add_argument("--candidates-per-case", type=int, default=8)
+    parser.add_argument("--routes-per-case", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--max-prompt-length", type=int, default=4096)

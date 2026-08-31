@@ -264,31 +264,18 @@ class RouteProbe:
 
 
 @dataclass(frozen=True)
-class AttackerObservation:
-    route: GraphRouteBundle
-    memory_neighborhood: tuple[MemoryNode, ...]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            **self.route.to_attacker_context(),
-            "known": [node.content for node in self.memory_neighborhood],
-        }
-
-
-@dataclass(frozen=True)
 class RouteCandidateObservation:
     choice: int
-    probe: RouteProbe
+    route: GraphRouteBundle
     memory_neighborhood: tuple[MemoryNode, ...]
     history: RouteAttackStats
 
     def to_prompt_dict(self) -> dict[str, Any]:
         return {
             "choice": self.choice,
-            "relation": self.probe.route.attack_mode.value,
-            "dimension": self.probe.route.mode_dimension,
-            "target": [node.memory for node in self.probe.route.evidence_nodes],
-            "probe_question": self.probe.oracle.question,
+            "relation": self.route.attack_mode.value,
+            "dimension": self.route.mode_dimension,
+            "target": [node.memory for node in self.route.evidence_nodes],
             "known": [node.content for node in self.memory_neighborhood],
             "history": self.history.to_dict(),
         }
@@ -311,22 +298,25 @@ class RouteSelectorRewardContext:
     memory_version: int
     memory_nodes: tuple[MemoryNode, ...]
     attack_history: tuple[RouteAttackStats, ...]
-    probes: tuple[RouteProbe, ...]
+    routes: tuple[GraphRouteBundle, ...]
     novelty_values: tuple[float, ...] = ()
+    cached_probes: tuple[RouteProbe, ...] = ()
 
     @classmethod
     def from_state(
         cls,
-        probes: tuple[RouteProbe, ...],
+        routes: tuple[GraphRouteBundle, ...],
         memory: MemoryState,
         novelty_values: tuple[float, ...] = (),
+        cached_probes: tuple[RouteProbe, ...] = (),
     ) -> "RouteSelectorRewardContext":
         return cls(
             memory_version=memory.version,
             memory_nodes=tuple(memory.nodes.values()),
             attack_history=tuple(memory.attack_history.values()),
-            probes=probes,
+            routes=routes,
             novelty_values=novelty_values,
+            cached_probes=cached_probes,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -334,8 +324,9 @@ class RouteSelectorRewardContext:
             "memory_version": self.memory_version,
             "memory_nodes": [node.to_dict() for node in self.memory_nodes],
             "attack_history": [item.to_dict() for item in self.attack_history],
-            "probes": [item.to_dict() for item in self.probes],
+            "routes": [item.to_dict() for item in self.routes],
             "novelty_values": list(self.novelty_values),
+            "cached_probes": [item.to_dict() for item in self.cached_probes],
         }
 
     @classmethod
@@ -349,8 +340,14 @@ class RouteSelectorRewardContext:
                 RouteAttackStats.from_dict(item)
                 for item in payload.get("attack_history", [])
             ),
-            probes=tuple(RouteProbe.from_dict(item) for item in payload["probes"]),
+            routes=tuple(
+                GraphRouteBundle.from_dict(item) for item in payload["routes"]
+            ),
             novelty_values=tuple(payload.get("novelty_values", ())),
+            cached_probes=tuple(
+                RouteProbe.from_dict(item)
+                for item in payload.get("cached_probes", ())
+            ),
         )
 
     def memory_state(self) -> MemoryState:

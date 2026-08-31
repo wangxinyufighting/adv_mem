@@ -3,6 +3,7 @@ import json
 from typing import Any
 
 from attacker.models import (
+    GraphRouteBundle,
     RouteCandidateObservation,
     RouteProbe,
     RouteSelectorObservation,
@@ -17,9 +18,9 @@ the current long-term memory.
 
 Prefer missing substantive user facts, state changes, decisions, preferences, and
 prior assistant responses. A useful gap may be absent from memory, hard to retrieve,
-or present but difficult to answer from. Use target, probe_question, known memory,
-and history together. Do not repeatedly select a route that has already produced no
-gap unless the memory version or known evidence has materially changed.
+or only partially represented. Use target, known memory, and history together. Do
+not repeatedly select a route that has already produced no gap unless the memory
+version or known evidence has materially changed.
 When memory is sparse, prefer compact routes that add more distinct new evidence.
 
 Return exactly one JSON object and nothing else: {"choice": 0}. The choice must be
@@ -34,25 +35,26 @@ class RouteSelector:
 
     def observe(
         self,
-        probes: tuple[RouteProbe, ...],
+        routes: tuple[GraphRouteBundle, ...],
         memory: MemoryState,
         retriever: Any,
     ) -> RouteSelectorObservation:
         candidates = []
-        for choice, probe in enumerate(probes):
+        for choice, route in enumerate(routes):
+            query = "\n".join(node.memory for node in route.evidence_nodes)
             results = retriever.retrieve(
-                probe.oracle.question,
+                query,
                 memory,
                 top_k=self.neighborhood_size,
             )
             history = memory.attack_history.get(
-                probe.route.route_id,
-                RouteAttackStats(probe.route.route_id),
+                route.route_id,
+                RouteAttackStats(route.route_id),
             )
             candidates.append(
                 RouteCandidateObservation(
                     choice=choice,
-                    probe=probe,
+                    route=route,
                     memory_neighborhood=tuple(result.node for result in results),
                     history=history,
                 )
@@ -85,16 +87,18 @@ class RouteSelector:
     def to_verl_record(
         self,
         observation: RouteSelectorObservation,
-        probes: tuple[RouteProbe, ...],
+        routes: tuple[GraphRouteBundle, ...],
         memory: MemoryState,
         novelty_values: tuple[float, ...] = (),
+        cached_probes: tuple[RouteProbe, ...] = (),
     ) -> dict[str, Any]:
-        signature = "|".join(probe.route.route_id for probe in probes)
+        signature = "|".join(route.route_id for route in routes)
         group_id = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:20]
         context = RouteSelectorRewardContext.from_state(
-            probes,
+            routes,
             memory,
             novelty_values,
+            cached_probes,
         )
         return {
             "data_source": "route_selector",
@@ -110,13 +114,13 @@ class RouteSelector:
     def select_many(
         self,
         policy: Any,
-        probes: tuple[RouteProbe, ...],
+        routes: tuple[GraphRouteBundle, ...],
         memory: MemoryState,
         retriever: Any,
         count: int,
         candidates_per_prompt: int,
-    ) -> tuple[RouteProbe, ...]:
-        remaining = list(probes)
+    ) -> tuple[GraphRouteBundle, ...]:
+        remaining = list(routes)
         selected = []
         while remaining and len(selected) < count:
             window = tuple(remaining[:candidates_per_prompt])
@@ -127,7 +131,7 @@ class RouteSelector:
             except (KeyError, TypeError, ValueError):
                 remaining = remaining[len(window) :]
                 continue
-            probe = window[choice]
-            selected.append(probe)
-            remaining.remove(probe)
+            route = window[choice]
+            selected.append(route)
+            remaining.remove(route)
         return tuple(selected)

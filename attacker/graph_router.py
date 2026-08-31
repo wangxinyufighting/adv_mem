@@ -217,6 +217,43 @@ class GraphRouterPolicy:
 
         raise NoRouteFoundError(f"No unseen {selected_mode.value} route is available")
 
+    def coverage_route(self, graph: MemoryGraphView) -> GraphRouteBundle:
+        """Anchor one route at least-visited eligible evidence."""
+        index = _GraphIndex(graph)
+        routes = [
+            _RawRoute(
+                mode=AttackMode.SINGLE_FACT,
+                walk_node_ids=(fact_id,),
+                evidence_node_ids=(fact_id,),
+                connector_node_ids=(),
+                steps=(),
+            )
+            for fact_id in index.activated_fact_ids
+        ]
+        routes.extend(
+            _RawRoute(
+                mode=AttackMode.TEMPORAL_EVOLUTION,
+                walk_node_ids=(source_id, target_id),
+                evidence_node_ids=(source_id, target_id),
+                connector_node_ids=(),
+                steps=(index.step(source_id, target_id, "MERGED_TO"),),
+                mode_dimension=dimension,
+            )
+            for source_id, target_id, dimension in self._temporal_pairs(index)
+        )
+        if not routes:
+            raise NoRouteFoundError("No eligible evidence route is available")
+        def score(item: _RawRoute) -> tuple[int, int]:
+            visits = [self._visit_count(node_id) for node_id in item.evidence_node_ids]
+            return min(visits), sum(visits)
+
+        best = min(map(score, routes))
+        route = self._random.choice([item for item in routes if score(item) == best])
+        signature = self._signature(graph, route)
+        bundle = self._build_bundle(graph, index, route, signature, 1)
+        self.state.record(bundle)
+        return bundle
+
     def _sample_route(self, index: _GraphIndex, mode: AttackMode) -> _RawRoute:
         handlers = {
             AttackMode.SINGLE_FACT: self._route_single_fact,
@@ -260,21 +297,7 @@ class GraphRouterPolicy:
         return self._topic_route(index, AttackMode.SAME_TOPIC, topic_id, fact_ids)
 
     def _route_temporal_evolution(self, index: _GraphIndex) -> _RawRoute:
-        pairs = []
-        for source_id, target_id in index.merge_pairs:
-            source = index.node_by_id[source_id]
-            target = index.node_by_id[target_id]
-            dimension = self._temporal_dimension(source, target)
-            if (
-                source.get("type") == "fact"
-                and source.get("status") == "archived"
-                and target.get("type") == "fact"
-                and target.get("status") == "activated"
-                and self._has_later_source(source, target)
-                and dimension
-            ):
-                pairs.append((source_id, target_id, dimension))
-
+        pairs = self._temporal_pairs(index)
         if not pairs:
             raise NoRouteFoundError("No archived-to-activated MERGED_TO path is available")
 
@@ -290,6 +313,23 @@ class GraphRouterPolicy:
             steps=(index.step(source_id, target_id, "MERGED_TO"),),
             mode_dimension=dimension,
         )
+
+    def _temporal_pairs(self, index: _GraphIndex) -> list[tuple[str, str, str]]:
+        pairs = []
+        for source_id, target_id in index.merge_pairs:
+            source = index.node_by_id[source_id]
+            target = index.node_by_id[target_id]
+            dimension = self._temporal_dimension(source, target)
+            if (
+                source.get("type") == "fact"
+                and source.get("status") == "archived"
+                and target.get("type") == "fact"
+                and target.get("status") == "activated"
+                and self._has_later_source(source, target)
+                and dimension
+            ):
+                pairs.append((source_id, target_id, dimension))
+        return pairs
 
     @classmethod
     def _temporal_dimension(cls, source: dict, target: dict) -> str | None:

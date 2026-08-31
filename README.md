@@ -1,12 +1,13 @@
 # AdvMem Training
 
-AdvMem 用两个交替更新的 GRPO policy 构建长期记忆：
+AdvMem 用两个交替更新的 GRPO policy 从完整 Memory Graph 构建长期记忆：
 
-- Route Selector 从固定 Probe Bank 中选择最可能暴露当前记忆缺口的问题。
-- Memory Builder 只为确定好的 repair plan 写一段 memory content。
+- Route Selector 从 Graph Router 每轮提出的 Path 中选择当前更可能存在缺口的位置；
+- Memory Builder 只为确定好的 ADD/MERGE plan 写一段 memory content。
 
-Graph Router、问题生成、Oracle 验证只在离线阶段运行一次。训练过程中不再生成
-Route 或改写问题；ADD/MERGE 与 target memory 由 provenance 规则确定。
+Graph 始终是训练的信息源。问题只在 Route 被 policy rollout 或正式攻击选中后，由冻结
+Question Generator 生成并经 Oracle 验证。合法问题写入 `probe_cache.json` 复用，但
+cache 不限制后续 Router 继续探索 Graph。
 
 文档：
 
@@ -16,21 +17,24 @@ Route 或改写问题；ADD/MERGE 与 target memory 由 provenance 规则确定�
 ## 核心流程
 
 ```text
-离线：Graph → Route → fixed question → Oracle → Probe Bank
-
-训练：Probe Bank → Route Selector → gap evaluation
-                         ↓ failure
-        Repair Controller → Memory Builder(content only)
-                         ↓
-        grounding → answer/retention → guarded commit
+每轮：Graph → Router 动态 Paths → Route Selector
+                                  ↓ selected
+               Lazy Question → Oracle → gap evaluation
+                                             ↓ failure
+               Repair Controller → Memory Builder(content only)
+                                             ↓
+               grounding → answer/retention → guarded commit
 ```
 
-训练执行固定 `--rounds`。没有在线 Probe 生成、第二套 audit route pool、复杂 stop
-condition 或 compaction。
+系统保留三项轻量保障状态：
+
+- `node_visit_counts`：每轮至少尝试一条包含最少访问 eligible evidence 的 Route；
+- `success_pool`：正式 commit 必须回归全部已验证能力；
+- `high_priority_buffer`：修复失败或服务不可用的问题下一轮优先重放。
 
 ## 环境
 
-需要 Linux x86_64、CUDA GPU、NVIDIA Driver 525+ 和 Python 3.10-3.12。
+需要 Linux x86_64、CUDA GPU、NVIDIA Driver 525+ 和 Python 3.10–3.12。
 首次运行 `train.sh` 会建立 CUDA 12.4 环境，也可提前执行：
 
 ```bash
@@ -40,74 +44,61 @@ cp .env.example .env
 
 主要服务：
 
-- DeepSeek：Probe Oracle、answer judge、memory grounding judge、query parser。
-- Qwen3-1.7B：训练 backbone 和冻结 Answer Agent。
-- `text-embedding-v4` 与 BGE reranker：训练和验证共用的 memory retrieval。
+- DeepSeek：惰性问题生成、Probe Oracle、answer judge、memory grounding judge；
+- Qwen3-1.7B：两个 GRPO policy 和冻结 Answer Agent；
+- `text-embedding-v4` 与 BGE reranker：memory retrieval。
 
-## 1. 离线生成 Probe Bank
+## 训练
 
-先启动冻结 Answer Agent：
-
-```bash
-CUDA_VISIBLE_DEVICES=1 bash scripts/serve_answer_agent.sh
-```
-
-然后一次性生成 Bank。建议每个 case 至少 32 个有效 Probe，而不是每轮临时生成
-16 条 Route：
-
-```bash
-PYTHONPATH=. .venv-cu124/bin/python -m scripts.build_probe_bank \
-  --graph ./data/longmemeval/memory_graph_v4_10.json \
-  --graph-version v4 \
-  --output ./data/longmemeval/probe_bank_v4_10.json \
-  --probes-per-case 32 \
-  --routes-per-batch 16 \
-  --max-routes-per-case 512
-```
-
-脚本按 case 保存进度；再次运行会复用已完成的 Probe。Bank 中每个 Probe 都包含
-固定 question、canonical answer、supporting evidence 和 Route，不随 GRPO 更新。
-
-## 2. 训练
-
-使用一个新的 `--work-dir` 启动：
+不需要提前构建 Probe Bank，直接传入原始 Graph：
 
 ```bash
 bash train.sh \
-  --probe-bank ./data/longmemeval/probe_bank_v4_10.json \
+  --graph ./data/longmemeval/memory_graph_v4_10.json \
+  --graph-version v4 \
   --model /root/autodl-tmp/models/Qwen3-1.7B \
-  --work-dir ./data/training_10_minimal_v1 \
+  --work-dir ./data/training_10_v3.0 \
   --rounds 5 \
   --epochs 1 \
-  --batch-size 2 \
+  --routes-per-case 32 \
   --candidates-per-case 8 \
-  --selector-candidates 2
+  --selector-candidates 2 \
+  --batch-size 2
 ```
 
-`train.sh` 会启动 Answer Agent 和 reranker。使用远程服务时，把 `.env` 中的
-`START_ANSWER_AGENT` 或 `START_RERANKER` 设为 `0`。
+关键参数：
 
-旧版 `run_state.json` 与新 Builder 输出协议不兼容；程序会明确报错并要求新的
-`--work-dir`，避免静默复用错误 checkpoint。
+| 参数 | 含义 | 默认值 |
+|---|---|---:|
+| `--routes-per-case` | 每个 case、每轮从 Graph 提出的动态 Route 数 | 32 |
+| `--candidates-per-case` | 每个 case、每轮实际测试/修复的最大 Probe 数 | 8 |
+| `--selector-candidates` | 每个 Selector prompt 中比较的 Route 数 | 2 |
+| `--rounds` | 固定交替训练轮数 | 1 |
+| `--epochs` | 每次 GRPO 调用的数据 epoch 数 | 2 |
+
+冷启动时 $M_0$ 为空，绝大多数 Route 都会失败。Attacker 仍然训练，初期主要依靠
+evidence novelty 区分 Route；Router 的最少访问节点规则负责覆盖探索，Builder 自然
+主要执行 ADD。随着 Memory 增长，回答正确率和重复惩罚开始提供更强的选择信号。
+
+旧版 `minimal_memory_loop_v1` 的 `run_state.json` 与当前动态图流程不兼容。第一次运行
+请使用新的 `--work-dir`，程序会拒绝静默复用旧状态。
 
 ## 输出
 
 ```text
 work_dir/
-  run_state.json
+  run_state.json            # MemoryState、模型路径、Graph 覆盖计数
+  probe_cache.json          # 已选 Route 的合法问题缓存
   services/
   round_000/
     attacker_data/
     attacker/
     memory_builder_data/
     memory_builder/
-  round_001/
-    ...
 ```
 
-每个 case 的 `MemoryState`、两个 policy checkpoint 和下一轮编号都保存在
-`run_state.json`。`success_pool` 保存全量回归基线，`high_priority_buffer` 保证失败
-能力在后续轮次强制重放。Probe Bank 是独立的只读输入，不再复制进每轮状态。
+`probe_cache.json` 是运行状态的一部分，不是固定训练集。Router 每轮仍从 Graph 提出
+新 Route；同一 Route 在后续 memory version 也允许重新测试。
 
 ## 测试
 

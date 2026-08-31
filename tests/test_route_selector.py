@@ -20,14 +20,18 @@ from attacker.oracle import DeepSeekOracle
 from attacker.models import (
     AttackMode,
     GraphRouteBundle,
+    MemoryGraphView,
     OracleResult,
     RouteNode,
     RouteProbe,
     RouteSelectorRewardContext,
+    RouterConfig,
+    RouterState,
     SupportingEvidence,
 )
+from attacker.graph_router import GraphRouterPolicy
 from attacker.reward import RouteSelectorReward
-from attacker.probe_bank import ProbeBank
+from attacker.probe_cache import ProbeCache
 from attacker.reward_judge import DeepSeekRewardJudge
 from attacker.selector import RouteSelector
 from memory.models import MemoryNode, MemoryState
@@ -114,6 +118,53 @@ def _memory_node(provenance=True) -> MemoryNode:
 
 
 class RouteSelectorTests(unittest.TestCase):
+    def test_coverage_route_anchors_the_least_visited_fact(self):
+        graph = MemoryGraphView(
+            0,
+            "user",
+            "test",
+            (
+                {"id": "fact-1", "type": "fact", "status": "activated", "memory": "A"},
+                {"id": "fact-2", "type": "fact", "status": "activated", "memory": "B"},
+            ),
+            (),
+        )
+        state = RouterState({"fact-1": 2, "fact-2": 0})
+        route = GraphRouterPolicy(RouterConfig(random_seed=0), state).coverage_route(
+            graph
+        )
+        self.assertEqual(route.walk_node_ids, ("fact-2",))
+
+    def test_coverage_route_includes_unvisited_temporal_history(self):
+        graph = MemoryGraphView(
+            0,
+            "user",
+            "test",
+            (
+                {
+                    "id": "old",
+                    "type": "fact",
+                    "status": "archived",
+                    "memory": "The old plan was Kyoto.",
+                    "sources": [{"content": "Kyoto", "chat_time": "2025-01-01"}],
+                },
+                {
+                    "id": "new",
+                    "type": "fact",
+                    "status": "activated",
+                    "memory": "The plan changed to Osaka now.",
+                    "sources": [{"content": "Osaka", "chat_time": "2025-02-01"}],
+                },
+            ),
+            ({"source": "old", "target": "new", "type": "MERGED_TO"},),
+        )
+        state = RouterState({"old": 0, "new": 3})
+        route = GraphRouterPolicy(RouterConfig(random_seed=0), state).coverage_route(
+            graph
+        )
+        self.assertEqual(route.attack_mode, AttackMode.TEMPORAL_EVOLUTION)
+        self.assertEqual(route.walk_node_ids, ("old", "new"))
+
     def test_oracle_accepts_legacy_single_rejection(self):
         class Completions:
             def create(self, **kwargs):
@@ -176,7 +227,9 @@ class RouteSelectorTests(unittest.TestCase):
 
     def test_selector_reward_credits_route_choice(self):
         probe = _probe()
-        context = RouteSelectorRewardContext.from_state((probe,), MemoryState.empty())
+        context = RouteSelectorRewardContext.from_state(
+            (probe.route,), MemoryState.empty(), cached_probes=(probe,)
+        )
 
         class Evaluator:
             calls = 0
@@ -208,9 +261,10 @@ class RouteSelectorTests(unittest.TestCase):
             oracle=replace(first.oracle, route_id="route-2"),
         )
         context = RouteSelectorRewardContext.from_state(
-            (first, second),
+            (first.route, second.route),
             MemoryState.empty(),
             (0.25, 1.0),
+            (first, second),
         )
 
         class Evaluator:
@@ -244,7 +298,9 @@ class RouteSelectorTests(unittest.TestCase):
         probe = _probe()
         memory = MemoryState.empty()
         MemoryStore(memory).record_route_attack("route-1", GapType.STORAGE.value)
-        context = RouteSelectorRewardContext.from_state((probe,), memory, (0.0,))
+        context = RouteSelectorRewardContext.from_state(
+            (probe.route,), memory, (0.0,), (probe,)
+        )
 
         class Evaluator:
             def evaluate(self, probe, memory):
@@ -255,7 +311,9 @@ class RouteSelectorTests(unittest.TestCase):
         )["score"]
         fresh = RouteSelectorReward(Evaluator()).evaluate(
             '{"choice":0}',
-            RouteSelectorRewardContext.from_state((probe,), MemoryState.empty(), (0.0,)),
+            RouteSelectorRewardContext.from_state(
+                (probe.route,), MemoryState.empty(), (0.0,), (probe,)
+            ),
         )["score"]
         self.assertLess(repeated, fresh)
 
@@ -303,39 +361,32 @@ class RouteSelectorTests(unittest.TestCase):
         )
         selector = RouteSelector()
         memory = MemoryState.empty()
-        probes = (first, second)
-        observation = selector.observe(probes, memory, _Retriever())
-        record = selector.to_verl_record(observation, probes, memory)
+        routes = (first.route, second.route)
+        observation = selector.observe(routes, memory, _Retriever())
+        record = selector.to_verl_record(
+            observation, routes, memory, cached_probes=(first, second)
+        )
         restored = RouteSelectorRewardContext.from_dict(record["extra_info"])
-        self.assertEqual(len(restored.probes), 2)
+        self.assertEqual(len(restored.routes), 2)
+        self.assertEqual(len(restored.cached_probes), 2)
         self.assertEqual(
             [item["choice"] for item in observation.to_dict()["candidates"]],
             [0, 1],
         )
-        self.assertIn('"probe_question"', record["prompt"][1]["content"])
+        self.assertNotIn('"probe_question"', record["prompt"][1]["content"])
 
     def test_selector_builds_contrast_pairs_from_empty_memory(self):
         first = _probe()
-        probes = tuple(
+        routes = tuple(
             replace(
-                first,
-                question_id=f"question-{index}",
-                route=replace(
-                    first.route,
-                    route_id=f"route-{index}",
-                    route_signature=f"route-{index}",
-                ),
-                oracle=replace(
-                    first.oracle,
-                    route_id=f"route-{index}",
-                    supporting_evidence=(
-                        SupportingEvidence(
-                            f"src-{index}",
-                            f"fact-{index}",
-                            "Kyoto",
-                            None,
-                            "user",
-                        ),
+                first.route,
+                route_id=f"route-{index}",
+                route_signature=f"route-{index}",
+                evidence_nodes=(
+                    replace(
+                        first.route.evidence_nodes[0],
+                        id=f"fact-{index}",
+                        source_ids=(f"src-{index}",),
                     ),
                 ),
             )
@@ -354,7 +405,7 @@ class RouteSelectorTests(unittest.TestCase):
         )
         records = RouteSelectorDatasetBuilder(
             _Retriever(),
-        ).records(probes, memory)
+        ).records(routes, memory)
         self.assertEqual(len(records), 2)
         self.assertTrue(
             all(
@@ -363,7 +414,7 @@ class RouteSelectorTests(unittest.TestCase):
             )
         )
         cold = RouteSelectorDatasetBuilder(_Retriever()).records(
-            probes,
+            routes,
             MemoryState.empty(),
         )
         self.assertEqual(len(cold), 2)
@@ -374,14 +425,59 @@ class RouteSelectorTests(unittest.TestCase):
             )
         )
 
-    def test_probe_bank_round_trip(self):
-        bank = ProbeBank("test", {0: (_probe(), replace(_probe(), question_id="q2"))})
+    def test_lazy_probe_cache_round_trip(self):
+        second = replace(
+            _probe(),
+            question_id="question-2",
+            route=replace(
+                _probe().route,
+                route_id="route-2",
+                route_signature="route-2",
+            ),
+            oracle=replace(_probe().oracle, route_id="route-2"),
+        )
         with TemporaryDirectory() as directory:
-            path = Path(directory) / "bank.json"
-            bank.save(path)
-            restored = ProbeBank.load(path)
-        self.assertEqual(restored.graph_version, "test")
-        self.assertEqual(len(restored.probes(0)), 2)
+            path = Path(directory) / "cache.json"
+            first_writer = ProbeCache("test", path)
+            second_writer = ProbeCache("test", path)
+            first_writer.put(_probe())
+            second_writer.put(second)
+            restored = ProbeCache("test", path)
+        self.assertEqual(restored.get(_probe().route).question_id, "question-1")
+        self.assertEqual(len(restored.probes), 2)
+
+    def test_reward_builds_only_the_selected_route_once(self):
+        first = _probe()
+        second = replace(
+            first,
+            question_id="question-2",
+            route=replace(
+                first.route,
+                route_id="route-2",
+                route_signature="route-2",
+            ),
+            oracle=replace(first.oracle, route_id="route-2"),
+        )
+
+        class Factory:
+            calls = []
+
+            def build(self, route):
+                self.calls.append(route.route_id)
+                return first if route.route_id == "route-1" else second
+
+        class Evaluator:
+            def evaluate(self, probe, memory):
+                return GapEvaluation(GapType.STORAGE, 0.0, (), None, 0.0, 0.0)
+
+        factory = Factory()
+        reward = RouteSelectorReward(Evaluator(), probe_factory=factory)
+        context = RouteSelectorRewardContext.from_state(
+            (first.route, second.route), MemoryState.empty(), (0.0, 0.0)
+        )
+        reward.evaluate('{"choice":1}', context)
+        reward.evaluate('{"choice":1}', context)
+        self.assertEqual(factory.calls, ["route-2"])
 
     def test_attack_history_is_backward_compatible_and_deduplicated(self):
         state = MemoryState.empty()

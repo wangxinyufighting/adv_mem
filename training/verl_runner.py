@@ -33,6 +33,7 @@ class VerlRunner:
         model_path: str,
         dataset: DatasetFiles,
         output_dir: str | Path,
+        probe_cache_path: str | Path | None = None,
     ) -> str:
         # Verl runs from its own source directory, so paths crossing that process
         # boundary must be absolute.
@@ -57,6 +58,8 @@ class VerlRunner:
             trace = checkpoints / "rollouts" / "reward_trace.jsonl"
             trace.unlink(missing_ok=True)
             env["ATTACKER_REWARD_TRACE"] = str(trace)
+            if probe_cache_path:
+                env["ATTACKER_PROBE_CACHE"] = str(Path(probe_cache_path).resolve())
         script = self.root / "scripts" / f"train_{role}_grpo.sh"
         subprocess.run([str(script)], cwd=self.root, env=env, check=True)
 

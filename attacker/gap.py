@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Any
 
 from attacker.answer_agent import is_insufficient_answer
-from attacker.models import RouteProbe
+from attacker.models import GraphRouteBundle, RouteProbe
 from memory.models import MemoryNode, MemoryState
 from memory.store import estimate_token_count
 
@@ -100,6 +100,29 @@ def support_coverage(
     required_sources = {
         item.source_id for item in probe.oracle.supporting_evidence
     }
+    return _coverage(required_nodes, required_sources, memories)
+
+
+def route_support_coverage(
+    route: GraphRouteBundle,
+    memories: tuple[MemoryNode, ...],
+) -> float:
+    return _coverage(
+        {node.id for node in route.evidence_nodes},
+        {
+            source_id
+            for node in route.evidence_nodes
+            for source_id in node.source_ids
+        },
+        memories,
+    )
+
+
+def _coverage(
+    required_nodes: set[str],
+    required_sources: set[str],
+    memories: tuple[MemoryNode, ...],
+) -> float:
     if not required_nodes and not required_sources:
         return 0.0
 
@@ -147,6 +170,30 @@ def novelty_values(
         tokens = sum(
             estimate_token_count(item.quote) for item in novel.values()
         )
+        raw.append(len(novel) / max(1, tokens) ** 0.5)
+    scale = max(raw, default=0.0)
+    return tuple(value / scale if scale else 0.0 for value in raw)
+
+
+def route_novelty_values(
+    routes: tuple[GraphRouteBundle, ...],
+    memory: MemoryState,
+) -> tuple[float, ...]:
+    known_nodes = {
+        node_id for item in memory.active_nodes for node_id in item.provenance_node_ids
+    }
+    known_sources = {
+        source_id for item in memory.active_nodes for source_id in item.source_ids
+    }
+    raw = []
+    for route in routes:
+        novel = [
+            node
+            for node in route.evidence_nodes
+            if node.id not in known_nodes
+            and not known_sources.intersection(node.source_ids)
+        ]
+        tokens = sum(estimate_token_count(node.memory) for node in novel)
         raw.append(len(novel) / max(1, tokens) ** 0.5)
     scale = max(raw, default=0.0)
     return tuple(value / scale if scale else 0.0 for value in raw)

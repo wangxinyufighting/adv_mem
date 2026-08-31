@@ -1,11 +1,18 @@
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from attacker.gap import novelty_values, support_coverage
+from attacker.gap import route_novelty_values, route_support_coverage
 from attacker.graph_router import GraphRouterPolicy, NoRouteFoundError
-from attacker.models import AttackMode, MemoryGraphView, RouteProbe, RouterConfig
+from attacker.models import (
+    AttackMode,
+    GraphRouteBundle,
+    MemoryGraphView,
+    RouterConfig,
+    RouterState,
+)
+from attacker.probe_cache import ProbeCache
 from attacker.selector import RouteSelector
 from defender.memory_builder import MemoryBuilder
 from memory.models import MemoryState
@@ -19,8 +26,6 @@ class DatasetFiles:
     val: Path
     train_size: int
     val_size: int
-    train_modes: dict[str, int] = field(default_factory=dict)
-    val_modes: dict[str, int] = field(default_factory=dict)
 
 
 def write_verl_dataset(
@@ -38,28 +43,17 @@ def write_verl_dataset(
         raise ValueError("Cannot build an empty verl dataset")
 
     rng = random.Random(seed)
-    if all(_attack_mode(item) for item in items):
-        train, val = _stratified_split(items, val_fraction, rng)
-        val = val or train[:1]
-    else:
-        rng.shuffle(items)
-        val_size = max(1, round(len(items) * val_fraction)) if len(items) > 1 else 1
-        val = items[:val_size]
-        train = items[val_size:] or items
+    rng.shuffle(items)
+    val_size = max(1, round(len(items) * val_fraction)) if len(items) > 1 else 1
+    val = items[:val_size]
+    train = items[val_size:] or items
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     train_path = directory / "train.parquet"
     val_path = directory / "val.parquet"
     pq.write_table(pa.Table.from_pylist(train), train_path)
     pq.write_table(pa.Table.from_pylist(val), val_path)
-    return DatasetFiles(
-        train_path,
-        val_path,
-        len(train),
-        len(val),
-        _mode_counts(train),
-        _mode_counts(val),
-    )
+    return DatasetFiles(train_path, val_path, len(train), len(val))
 
 
 class RouteProposalBuilder:
@@ -73,14 +67,24 @@ class RouteProposalBuilder:
         self.reader = reader
         self.seed = seed
 
-    def routes(self, case_index: int, count: int) -> tuple:
+    def routes(
+        self,
+        case_index: int,
+        count: int,
+        state: RouterState | None = None,
+    ) -> tuple[GraphRouteBundle, ...]:
         config = RouterConfig(random_seed=self.seed, fallback_to_single_fact=False)
-        router = GraphRouterPolicy(config)
+        router = GraphRouterPolicy(config, state)
         graph = MemoryGraphView.from_case(
             self.reader.get_case(case_index),
             self.reader.version,
         )
-        routes = []
+        if count <= 0:
+            return ()
+        try:
+            routes = [router.coverage_route(graph)]
+        except NoRouteFoundError:
+            return ()
         while len(routes) < count:
             added = False
             for mode in AttackMode:
@@ -115,26 +119,27 @@ class RouteSelectorDatasetBuilder:
 
     def records(
         self,
-        probes: tuple[RouteProbe, ...],
+        routes: tuple[GraphRouteBundle, ...],
         memory: MemoryState,
+        probe_cache: ProbeCache | None = None,
     ) -> tuple[dict[str, Any], ...]:
         values = {
-            probe.route.route_id: value
-            for probe, value in zip(
-                probes,
-                novelty_values(probes, memory),
+            route.route_id: value
+            for route, value in zip(
+                routes,
+                route_novelty_values(routes, memory),
                 strict=True,
             )
         }
         covered = []
         uncovered = []
-        for probe in probes:
+        for route in routes:
             target = (
                 covered
-                if support_coverage(probe, memory.active_nodes) >= 1.0
+                if route_support_coverage(route, memory.active_nodes) >= 1.0
                 else uncovered
             )
-            target.append(probe)
+            target.append(route)
 
         rng = random.Random(self.seed)
         rng.shuffle(covered)
@@ -148,7 +153,7 @@ class RouteSelectorDatasetBuilder:
                 for index in range(max(len(covered), len(uncovered)))
             ]
         else:
-            ranked = sorted(probes, key=lambda item: values[item.route.route_id])
+            ranked = sorted(routes, key=lambda item: values[item.route_id])
             pairs = []
             while len(ranked) >= 2:
                 pairs.append((ranked.pop(0), ranked.pop()))
@@ -163,7 +168,12 @@ class RouteSelectorDatasetBuilder:
                 observation,
                 window,
                 memory,
-                tuple(values[item.route.route_id] for item in window),
+                tuple(values[item.route_id] for item in window),
+                tuple(
+                    probe
+                    for item in window
+                    if probe_cache and (probe := probe_cache.get(item))
+                ),
             )
             if self._fits(record):
                 records.append(record)
@@ -178,10 +188,6 @@ class RouteSelectorDatasetBuilder:
             add_generation_prompt=True,
         )
         return len(tokens) <= self.max_prompt_tokens
-
-
-# The old name remains importable, but now denotes proposal generation only.
-AttackerDatasetBuilder = RouteProposalBuilder
 
 
 def memory_builder_records(
@@ -199,39 +205,3 @@ def memory_builder_records(
         )
         for item in pending
     )
-
-
-def _attack_mode(record: dict[str, Any]) -> str | None:
-    route = record["extra_info"].get("route")
-    return route.get("attack_mode") if route else None
-
-
-def _mode_counts(items: list[dict[str, Any]]) -> dict[str, int]:
-    return {
-        mode.value: sum(_attack_mode(item) == mode.value for item in items)
-        for mode in AttackMode
-        if any(_attack_mode(item) == mode.value for item in items)
-    }
-
-
-def _stratified_split(
-    items: list[dict[str, Any]],
-    val_fraction: float,
-    rng: random.Random,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    train = []
-    val = []
-    for mode in AttackMode:
-        bucket = [item for item in items if _attack_mode(item) == mode.value]
-        if not bucket:
-            continue
-        rng.shuffle(bucket)
-        val_size = min(max(1, round(len(bucket) * val_fraction)), len(bucket) - 1)
-        if len(bucket) == 1:
-            train.extend(bucket)
-        else:
-            val.extend(bucket[:val_size])
-            train.extend(bucket[val_size:])
-    rng.shuffle(train)
-    rng.shuffle(val)
-    return train, val
