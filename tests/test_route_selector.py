@@ -2,7 +2,9 @@ import sys
 import types
 import unittest
 import json
+from contextlib import redirect_stdout
 from dataclasses import replace
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -30,6 +32,7 @@ from attacker.models import (
     SupportingEvidence,
 )
 from attacker.graph_router import GraphRouterPolicy
+from attacker.probe import ProbeFactory
 from attacker.reward import RouteSelectorReward
 from attacker.probe_cache import ProbeCache
 from attacker.reward_judge import DeepSeekRewardJudge
@@ -478,6 +481,21 @@ class RouteSelectorTests(unittest.TestCase):
         reward.evaluate('{"choice":1}', context)
         reward.evaluate('{"choice":1}', context)
         self.assertEqual(factory.calls, ["route-2"])
+
+    def test_probe_factory_logs_rejection_reasons(self):
+        class Generator:
+            def generate(self, route):
+                return "What does the context say?"
+
+        factory = ProbeFactory(Generator(), None, None, None, attempts=2)
+        output = StringIO()
+        with redirect_stdout(output):
+            self.assertIsNone(factory.build(_probe().route))
+        payload = json.loads(output.getvalue().removeprefix("Probe Build: "))
+        self.assertFalse(payload["success"])
+        self.assertEqual(
+            payload["failures"], {"question_constraint/metadata_leak": 2}
+        )
 
     def test_attack_history_is_backward_compatible_and_deduplicated(self):
         state = MemoryState.empty()
