@@ -56,8 +56,11 @@ class VerlRunner:
         }
         if role == "attacker":
             trace = checkpoints / "rollouts" / "reward_trace.jsonl"
+            probe_trace = checkpoints / "rollouts" / "probe_trace.jsonl"
             trace.unlink(missing_ok=True)
+            probe_trace.unlink(missing_ok=True)
             env["ATTACKER_REWARD_TRACE"] = str(trace)
+            env["ATTACKER_PROBE_TRACE"] = str(probe_trace)
             if probe_cache_path:
                 env["ATTACKER_PROBE_CACHE"] = str(Path(probe_cache_path).resolve())
         script = self.root / "scripts" / f"train_{role}_grpo.sh"

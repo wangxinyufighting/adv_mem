@@ -525,6 +525,33 @@ class RouteSelectorTests(unittest.TestCase):
             payload["failures"], {"question_constraint/metadata_leak": 2}
         )
 
+    def test_probe_factory_traces_failed_attempt(self):
+        class Generator:
+            def generate(self, route):
+                return "Where do I plan to visit?"
+
+        class Oracle:
+            def evaluate(self, question, route):
+                return _probe().oracle
+
+        class AnswerAgent:
+            def answer_sources(self, question, sources):
+                return "INSUFFICIENT_INFORMATION"
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "probe_trace.jsonl"
+            factory = ProbeFactory(
+                Generator(), Oracle(), AnswerAgent(), None, attempts=1, trace_path=path
+            )
+            with redirect_stdout(StringIO()):
+                self.assertIsNone(factory.build(_probe().route))
+            trace = json.loads(path.read_text())
+
+        self.assertEqual(trace["question"], "Where do I plan to visit?")
+        self.assertEqual(trace["golden_answer"], "INSUFFICIENT_INFORMATION")
+        self.assertEqual(trace["golden_corpus"], [])
+        self.assertEqual(trace["rejection_stage"], "gold_insufficient")
+
     def test_attack_history_is_backward_compatible_and_deduplicated(self):
         state = MemoryState.empty()
         old_payload = state.to_dict()

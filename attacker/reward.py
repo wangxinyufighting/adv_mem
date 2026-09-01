@@ -69,6 +69,7 @@ class RouteSelectorReward:
             DeepSeekOracle(),
             answer_agent,
             judge,
+            trace_path=os.getenv("ATTACKER_PROBE_TRACE"),
         )
         return cls(
             evaluator,
