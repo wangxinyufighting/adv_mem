@@ -6,7 +6,7 @@ from pathlib import Path
 from attacker.models import GraphRouteBundle, RouteProbe
 
 
-SCHEMA_VERSION = "probe_cache_v1"
+SCHEMA_VERSION = "probe_cache_v2"
 
 
 class ProbeCache:
@@ -39,10 +39,9 @@ class ProbeCache:
         if not self.path or not self.path.exists():
             return
         payload = json.loads(self.path.read_text(encoding="utf-8"))
-        if (
-            payload.get("schema_version") != SCHEMA_VERSION
-            or payload.get("graph_version") != self.graph_version
-        ):
+        if payload.get("schema_version") != SCHEMA_VERSION:
+            return
+        if payload.get("graph_version") != self.graph_version:
             raise ValueError("Probe cache does not match the current graph")
         self.probes = {
             route_id: RouteProbe.from_dict(item)

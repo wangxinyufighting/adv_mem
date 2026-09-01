@@ -182,7 +182,17 @@ class GraphRouteBundle:
 
     def to_attacker_context(self) -> dict[str, Any]:
         """Expose only route fields needed to generate the question."""
-        context = {"target": [node.memory for node in self.evidence_nodes]}
+        context = {
+            "target": [node.memory for node in self.evidence_nodes],
+            "sources": [
+                {
+                    "role": source.role,
+                    "time": source.chat_time,
+                    "content": source.content,
+                }
+                for source in self.source_records
+            ],
+        }
         if self.attack_mode == AttackMode.COMPARISON and self.mode_dimension:
             context["dimension"] = self.mode_dimension
         return context

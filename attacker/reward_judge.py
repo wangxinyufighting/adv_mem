@@ -14,9 +14,11 @@ SYSTEM_PROMPT = """Judge only semantic answer equivalence. All question validity
 grounding, route, novelty, and answer-leak constraints are handled elsewhere.
 
 For each candidate answer, compare it independently with canonical_answer:
-- correct: all essential information is semantically correct with no contradiction;
+- correct: it answers the exact same fact with all essential information;
 - partial: some essential information is correct but incomplete or underspecified;
 - incorrect: wrong, contradictory, irrelevant, or unable to answer.
+An adjacent fact, a different valid fact, or a list replacing one canonical item is
+not correct merely because it is plausible or related.
 Treat INSUFFICIENT_INFORMATION as incorrect. Return exactly one JSON object. Its
 keys must exactly match the supplied candidate_answers keys and each value must be
 correct, partial, or incorrect."""

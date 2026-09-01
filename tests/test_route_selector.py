@@ -18,6 +18,7 @@ if "openai" not in sys.modules:
     sys.modules["openai"] = openai
 
 from attacker.gap import GapEvaluation, GapEvaluator, GapType, novelty_values
+from attacker.answer_agent import is_insufficient_answer
 from attacker.oracle import DeepSeekOracle
 from attacker.models import (
     AttackMode,
@@ -29,6 +30,7 @@ from attacker.models import (
     RouteSelectorRewardContext,
     RouterConfig,
     RouterState,
+    SourceRecord,
     SupportingEvidence,
 )
 from attacker.graph_router import GraphRouterPolicy
@@ -37,6 +39,7 @@ from attacker.reward import RouteSelectorReward
 from attacker.probe_cache import ProbeCache
 from attacker.reward_judge import DeepSeekRewardJudge
 from attacker.selector import RouteSelector
+from attacker.validation import question_constraint_error, speaker_role_error
 from memory.models import MemoryNode, MemoryState
 from memory.store import MemoryStore
 from training.dataset_builder import RouteSelectorDatasetBuilder
@@ -136,9 +139,13 @@ class RouteSelectorTests(unittest.TestCase):
         client = types.SimpleNamespace(
             chat=types.SimpleNamespace(completions=completions)
         )
-        question = FixedProbeQuestionGenerator(client, "deepseek-chat").generate(
-            _probe().route
+        route = replace(
+            _probe().route,
+            source_records=(
+                SourceRecord("src-1", "fact-1", "user", "2025-01-01", "Kyoto"),
+            ),
         )
+        question = FixedProbeQuestionGenerator(client, "deepseek-chat").generate(route)
 
         self.assertEqual(question, "Where do I plan to visit?")
         self.assertEqual(
@@ -147,7 +154,36 @@ class RouteSelectorTests(unittest.TestCase):
         self.assertEqual(
             completions.kwargs["response_format"], {"type": "json_object"}
         )
+        payload = json.loads(completions.kwargs["messages"][1]["content"])
+        self.assertEqual(payload["sources"][0]["role"], "user")
+        self.assertIn(
+            "one objective canonical answer",
+            completions.kwargs["messages"][0]["content"],
+        )
         self.assertNotIn("/no_think", completions.kwargs["messages"][1]["content"])
+
+    def test_probe_constraints_reject_non_unique_and_wrong_speaker(self):
+        probe = _probe()
+        self.assertEqual(
+            question_constraint_error("What is one tip you gave?", probe.route),
+            "non_unique_answer",
+        )
+        self.assertEqual(
+            speaker_role_error("What did you say you liked?", probe.oracle),
+            "user_as_assistant",
+        )
+        self.assertIsNone(
+            speaker_role_error("What did I tell you I liked?", probe.oracle)
+        )
+
+    def test_natural_abstention_is_insufficient(self):
+        self.assertTrue(
+            is_insufficient_answer(
+                "Insufficient information is available to determine the number."
+            )
+        )
+        self.assertTrue(is_insufficient_answer("没有提供具体联系电话。"))
+        self.assertFalse(is_insufficient_answer("The phone number is 12345."))
 
     def test_coverage_route_anchors_the_least_visited_fact(self):
         graph = MemoryGraphView(
@@ -476,6 +512,26 @@ class RouteSelectorTests(unittest.TestCase):
             restored = ProbeCache("test", path)
         self.assertEqual(restored.get(_probe().route).question_id, "question-1")
         self.assertEqual(len(restored.probes), 2)
+
+    def test_old_probe_cache_is_rebuilt(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "cache.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "probe_cache_v1",
+                        "graph_version": "test",
+                        "probes": {"route-1": _probe().to_dict()},
+                    }
+                )
+            )
+            cache = ProbeCache("test", path)
+            self.assertFalse(cache.probes)
+            cache.put(_probe())
+            self.assertEqual(
+                json.loads(path.read_text())["schema_version"],
+                "probe_cache_v2",
+            )
 
     def test_reward_builds_only_the_selected_route_once(self):
         first = _probe()

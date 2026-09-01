@@ -15,18 +15,22 @@ from attacker.validation import (
     ensure_question_mark,
     question_constraint_error,
     route_fidelity,
+    speaker_role_error,
 )
 from utils.json_output import StructuredOutputError, parse_json_object
 
 
 SYSTEM_PROMPT = """Return JSON with exactly one key: {"question": "..."}.
-Write one natural, standalone question whose answer is determined
-by target. Use I/my for the user's life and you for an earlier assistant response.
-Do not reveal the answer, invent facts, mention the input, or join unrelated details.
-The question must end with a question mark."""
+Write one natural, standalone question with one objective canonical answer stated in
+the target sources. Every requested part must be answerable. Preserve speaker
+roles: I/my means the user; you/your means the earlier assistant. Never turn an
+assistant suggestion into a user fact. If several answers are equally valid, ask
+for all of them or anchor one unambiguously. Do not reveal the answer, invent
+facts, ask for missing details, mention the input, or join unrelated facts. End
+with one question mark."""
 
 MODE_PROMPTS = {
-    AttackMode.SINGLE_FACT: "Ask for one specific target detail.",
+    AttackMode.SINGLE_FACT: "Ask directly for one uniquely identified fact.",
     AttackMode.SAME_TOPIC: "Ask one question that requires at least two target facts.",
     AttackMode.TEMPORAL_EVOLUTION: "Ask about the earlier and later target states.",
     AttackMode.COMPARISON: "Compare both targets on the supplied dimension.",
@@ -163,6 +167,9 @@ class ProbeFactory:
                     last_error = reject(
                         f"oracle_invalid/{oracle.invalid_reason or 'unknown'}"
                     )
+                    continue
+                if error := speaker_role_error(question, oracle):
+                    last_error = reject(f"speaker_role/{error}")
                     continue
                 if answer_is_leaked(question, oracle.answer):
                     last_error = reject("answer_leak")
